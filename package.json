@@ -1,0 +1,26 @@
+{
+  "name": "msme-trade-network-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "sandbox": "node dist/src/network.js"
+  },
+  "dependencies": {
+    "canonicalize": "^2.1.0",
+    "libsodium-wrappers": "^0.7.15",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.13",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

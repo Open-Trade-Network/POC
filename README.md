@@ -1,87 +1,162 @@
 # POC
-Proof Of Concept of decentralized interoperable trade data exchange network for Indian domestic b2b traders
+Proof of Concept for a decentralized interoperable trade data exchange network for Indian domestic B2B traders.
+
+## Status
+
+**Current status:** working prototype v0.2. The repo now includes a validated protocol layer, a hosted sandbox network, a Zoho-first ERP adapter, and a sovereign-company AI gateway pattern for cross-company communication.
+
+This project is no longer only a blueprint. It now demonstrates the core building blocks needed for a real sandbox integration path:
+
+- canonical document model
+- end-to-end encrypted document exchange
+- bilateral append-only ledger prototype
+- HTTP-hosted sandbox network for online integration
+- ERP adapter for Zoho Books invoice sync
+- company-owned AI gateway with signed intent validation and policy enforcement
 
 ## Architecture
 
-**Status:** First blueprint, draft v0.1. This architecture is intended to be refined through threat modeling, protocol design, and pilot testing.
-
-The network is decentralized infrastructure for B2B trade-document exchange and **triple-entry accounting**. Counterparties sign a shared accounting event, verify the same event, and derive their respective books from it. The ledger is append-only: corrections, reversals, and disputes are new events, never edits to accepted history.
+The network is decentralized infrastructure for B2B trade-document exchange and triple-entry accounting. Counterparties sign a shared accounting event, verify the same event, and derive their respective books from it. The ledger remains append-only: corrections, reversals, and disputes are new events, never edits to accepted history.
 
 The exchange and ledger are one logical network with distinct privacy boundaries:
 
-- **Ledger plane:** replicated signed events, commitments, proofs, and derived status provide shared tamper-evident accounting history.
-- **Data plane:** end-to-end encrypted documents and attachments are delivered and replicated for authorized parties. Relays and storage nodes do not receive decryption keys by default.
-- **Verification plane:** businesses grant named third parties scoped permission to verify authenticity or selected claims without unrestricted access to documents or ledger data.
+- **Ledger plane:** signed events, commitments, proofs, and derived status provide shared tamper-evident accounting history.
+- **Data plane:** end-to-end encrypted documents are transmitted between authorized counterparties. Relays and storage nodes do not receive decryption keys by default.
+- **Verification plane:** businesses and partner systems grant scoped permissions to third parties, ERP systems, and AI gateways without unrestricted access to all data.
+- **AI gateway plane:** each company runs its own agent gateway, which converts local AI actions into signed, policy-scoped intents before they interact with the shared network.
 
 ```mermaid
 flowchart LR
-	A[Business A node] -->|signed, encrypted document| R[Peer / relay / institution nodes]
-	R -->|ciphertext delivery| B[Business B node]
-	A --> L[Distributed triple-entry ledger]
-	B -->|countersignature / response| L
-	L --> V[Authorized verifier: scoped evidence or proof]
-	L -. optional opaque batch commitment .-> X[External ledger anchor]
+    A[Company A AI + ERP] --> G1[Company A gateway]
+    B[Company B AI + ERP] --> G2[Company B gateway]
+    G1 -->|signed intent / encrypted payload| N[Sandbox network + ledger]
+    G2 -->|signed intent / encrypted payload| N
+    N -->|status / evidence / proof| G1
+    N -->|status / evidence / proof| G2
+    G1 --> E1[Zoho / ERP sync]
+    G2 --> E2[ERP sync]
 ```
 
-Encryption protects document contents, but does not hide routing metadata such as relationships, timing, message size, or frequency. The design minimizes metadata and makes its visibility an explicit decision. It cannot protect against every compromised endpoint, key, or authorized recipient.
+## Implemented prototype components
 
-### Node classes
+### 1. Canonical trade document protocol
 
-Node class describes operational role and resource profile. It does not automatically grant plaintext access, validator rights, or governance authority.
+The core model defines a canonical invoice and trade-document schema with strict validation for:
 
-| Class | Role | Boundary |
-|---|---|---|
-| **Mother** | Bootstrap, signed network configuration, discovery, protocol distribution, health | Replicated across operators; no root authority or default trade-content access |
-| **Institution** | High-availability relay/storage, possible validator, institutional integrations | Ciphertext and only the ledger view permitted by policy |
-| **Professional** | Business/service-provider node, ERP connector, document workflow, ledger verification | Reads only records its operator is authorized to access |
-| **Light** | Mobile, browser, or constrained participant using peers and relays | Verifies relevant events; does not blindly trust relays for integrity |
+- document identity and revisioning
+- participant identity enforcement
+- tax total consistency
+- fixed currency rules
+- canonical serialization for signing and hashing
 
-Validator membership, bootstrap services, and business-identity issuance are separate roles. No single mother node or institution should become a hidden point of control.
+This is implemented in the core schema and canonicalization modules.
 
-### Triple-entry event flow
+### 2. Private exchange and verification
 
-1. A business creates and validates a canonical document revision locally.
-2. It signs the revision, encrypts the document for its recipient, and submits a ledger event bound to that revision.
-3. Relays deliver or replicate ciphertext. Validators check authorization, signatures or proofs, idempotency, and allowed state transitions using only their permitted view.
-4. The recipient decrypts and verifies the document, then accepts, rejects, or disputes it. Acceptance adds its countersignature.
-5. At the defined finality threshold, both businesses verify the shared event and derive their accounting entries.
-6. Corrections and disputes append new events; accepted history is not rewritten.
+The system supports:
 
-The immutability target is append-only, tamper-evident history under explicit consensus and governance assumptions, not a claim that data can never be changed under any failure. Payload retention is separate: a permanent commitment may outlive encrypted replicas or decryption keys, so retention and erasure obligations need legal review.
+- participant key generation
+- signature verification
+- document encryption for the recipient
+- ciphertext integrity checks
+- controlled decryption and verification by the authorized recipient
 
-### Privacy and third-party verification
+This is the foundation for privacy-preserving counterpart communication.
 
-The initial exchange should use end-to-end encryption, participant-controlled signing keys, authenticated key discovery, rotation/revocation, canonical serialization, randomized commitments for sensitive values, encrypted backups, and replay protection. Plaintext and keys must not appear in relays, logs, analytics, or default telemetry.
+### 3. Bilateral append-only ledger
 
-Zero-knowledge proofs (ZKPs) are a targeted later capability, not a replacement for encryption. They may prove a defined claim, such as a tax calculation following a rule or a receivable meeting lender criteria, without revealing every input. A proof validates a computation over supplied inputs; it does not prove the inputs are true. Start with signatures, encryption, commitments, and selective disclosure; add ZK only for a concrete workflow.
+Each accepted event must be co-signed by both trusted counterparties. Event sequences are chained by previous-hash checks and verified before acceptance. The ledger prototype enforces append-only progression and rejects invalid or single-party proposals.
 
-A business may issue a signed grant to a named verifier, scoped by records or claims, fields, purpose, expiry, and onward-disclosure policy. Verification can range from authenticity checks to selected-field disclosure, a proof, or full document access. Revocation stops future access but cannot retract information already copied. Disclosing counterparty-confidential fields may require both businesses' consent.
+### 4. Hosted sandbox network
 
-### Ledger strategy and integrations
+A hosted in-memory network has been added so the protocol can be used in a live HTTP environment for sandbox integration. It exposes endpoints for:
 
-The network's own distributed ledger is the authoritative triple-entry system. An external chain is optional, not a way to outsource security. A future integration could anchor opaque batch commitments to make retrospective rewriting more detectable. Do not publish plaintext, guessable document hashes, or unnecessary business metadata. Evaluate candidates for validator independence, finality, privacy leakage, governance, availability, cost, and migration options.
+- participant registration
+- encrypted document submission
+- ledger event submission
+- ledger state queries
+- health checks
 
-Use a canonical document model with versioned profiles for GST e-invoice/e-way bill and future ERP, ONDC/Beckn, OCEN, and EDIFACT integrations. External services are disclosure boundaries: data sent to them is visible to those providers. Prefer ERP adapters in participant-controlled professional nodes or local agents, with narrowly scoped credentials.
+This makes the POC suitable for developer integration testing and external client simulation.
 
-### Build sequence
+### 5. Zoho-first ERP integration
 
-1. **Protocol and threat model:** define field visibility, node capabilities, identity/key lifecycle, validator assumptions, finality, and retention.
-2. **Private exchange:** prove two business nodes can exchange an encrypted document through an untrusted relay and independently verify it.
-3. **Distributed ledger:** implement shared event rules, countersignatures, append-only corrections/disputes, multi-operator validation, and recovery tests.
-4. **Node classes and governance:** enforce capabilities, independent operation, signed upgrades, and privacy-preserving monitoring.
-5. **Third-party verification:** implement scoped grants, authenticity checks, selective disclosure, expiry/revocation, and audit records.
-6. **Targeted ZK/anchoring and pilot:** add only for a concrete use case; complete independent security review and operational testing.
+The project now includes a Zoho Books-oriented ERP adapter flow for invoice integration:
 
-### Open architecture decisions
+- receive an invoice payload from Zoho Books
+- map it to the canonical trade-document schema
+- create the encrypted network envelope
+- submit the corresponding ledger proposal
+- post the accepted status back into ERP metadata
 
-- Permissioned, open, or hybrid validator participation, and the fault/collusion threshold required for finality.
-- What each field reveals to counterparties, validators, other participants, and verifiers; whether GSTIN is visible or selectively disclosed.
-- Business identity proofing, delegated signing authority, and acceptable key recovery model.
-- Which events require both counterparties to countersign and which can be provisional or unilateral.
-- Payload retention, backup, legal hold, and deletion obligations.
-- The first third-party verification use case and the specific claim it must prove.
-- Measurable requirements that justify ZK proofs or an external-chain anchor.
+This gives a practical first ERP path without hardcoding the network logic into vendor-specific APIs.
 
-### Full blueprint
+### 6. Sovereign AI agent gateways
 
-See the [full architecture blueprint](ARCHITECTURE_BLUEPRINT.md) and [PDF version](ARCHITECTURE_BLUEPRINT.pdf). The detailed document includes component boundaries, risks, phase exit criteria, and decisions to resolve before choosing a ledger implementation.
+The project now includes a company-owned AI gateway model that is designed for multi-company participation. Each gateway:
+
+- is associated with a company and participant identity
+- signs outbound intents with the participant key
+- verifies inbound signed requests
+- authorizes only actions allowed by local policy
+- restricts documents, recipients, and scopes to permitted values
+
+This is the recommended pattern for cross-company AI communication when each company owns its own infrastructure and data boundary.
+
+## Recommended communication pattern for AI + ERP + network
+
+The optimum pattern is not to let AI systems directly act as network peers. Instead:
+
+1. Each company runs its own AI gateway inside sovereign infrastructure.
+2. The gateway converts AI decisions into signed, policy-scoped intents.
+3. The shared network validates scope, identity, and signature.
+4. Only approved events are appended to the ledger or exposed to counterparties.
+5. ERP systems and downstream processes receive event updates through a webhook, queue, or API callback.
+
+This keeps the AI inside the company trust boundary while still enabling secure interoperability.
+
+## Local development and verification
+
+Install dependencies:
+
+npm install
+
+Run tests:
+
+npm test
+
+Run TypeScript build:
+
+npm run build
+
+Run the sandbox network:
+
+npm run sandbox
+
+The sandbox listens on the default local port used by the hosted network runtime.
+
+## Build sequence and status
+
+The current project has already completed the following milestones:
+
+1. **Protocol and threat model:** canonical schema, signatures, privacy boundaries, and validation logic.
+2. **Private exchange:** encrypted document flow and recipient verification.
+3. **Distributed ledger prototype:** append-only double-party signing and chain verification.
+4. **Sandbox hosting:** live network layer for external integration.
+5. **ERP integration:** Zoho-first invoice import and ledger update path.
+6. **Sovereign AI integration:** company-owned gateway and signed intent policy model.
+
+## Open architecture decisions
+
+These remain important for the next production-ready phase:
+
+- validator participation model and finality assumptions
+- scope of field visibility across counterparties and verifiers
+- delegated authority rules for AI and ERP systems
+- retention and deletion obligations for signed ledger history
+- operational security for cross-company webhook and queue integrations
+- production OAuth and identity setup for ERP providers such as Zoho
+
+## Full blueprint
+
+See the [full architecture blueprint](ARCHITECTURE_BLUEPRINT.md) and [PDF version](ARCHITECTURE_BLUEPRINT.pdf) for the broader design and governance context.
