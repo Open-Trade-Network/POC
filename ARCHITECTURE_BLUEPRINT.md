@@ -1,16 +1,16 @@
 # Decentralized Trade Data Exchange Network
 
-## First Architecture Blueprint
+## Architecture Blueprint and POC Implementation Snapshot
 
-**Status:** Draft for discussion | **Version:** 0.1 | **Scope:** Indian domestic B2B trade, triple-entry accounting, distributed ledger, privacy-preserving verification
+**Status:** Architecture proposal with working prototype | **Version:** 0.2 | **Scope:** Indian domestic B2B trade, triple-entry accounting, distributed ledger, privacy-preserving verification
 
 ## 1. Executive summary
 
-The network is decentralized infrastructure through which registered businesses exchange structured trade documents and record shared accounting events. Its core is a distributed, append-only triple-entry ledger: counterparties sign a common event, retain verifiable records, and derive their respective accounting entries from that event.
+The target network is decentralized infrastructure through which registered businesses exchange structured trade documents and record shared accounting events. Its core is a distributed, append-only triple-entry ledger: counterparties sign a common event, retain verifiable records, and derive their respective accounting entries from that event.
 
-The ledger is integrated with private, encrypted document exchange. Ledger participants can verify event integrity and protocol validity without automatically reading every invoice or attachment. A business can authorize a named third party to verify a defined set of records or claims, with disclosure limited to the permission granted.
+The ledger is designed to work with private, encrypted document exchange. Ledger participants should be able to verify event integrity and protocol validity without automatically reading every invoice or attachment. A business can authorize a named third party to verify a defined set of records or claims, with disclosure limited to the permission granted.
 
-Four node classes are proposed: **mother**, **institution**, **professional**, and **light** nodes. These describe operational responsibilities and capabilities; they do not, by themselves, grant access to plaintext or governance power. This is a first blueprint, not a final protocol or security certification. Consensus, cryptographic suites, identity governance, retention obligations, and specific external-chain choices need validation before implementation.
+Four node classes are proposed: **mother**, **institution**, **professional**, and **light** nodes. These describe target operational responsibilities and capabilities; they do not, by themselves, grant access to plaintext or governance power. The current TypeScript POC implements canonical trade documents, signing and encryption primitives, bilateral ledger proposals, a hosted HTTP sandbox, a Zoho Books adapter, and a company-owned AI gateway. It is a single-process prototype, not a distributed production network or security certification. Consensus, production identity and key custody, retention obligations, and specific external-chain choices remain open.
 
 ## 2. Goals and non-goals
 
@@ -70,7 +70,13 @@ Four node classes are proposed: **mother**, **institution**, **professional**, a
      scoped disclosure / proof checks      opaque batch commitments
 ```
 
-This is a logical view. A first implementation may use a limited validator group while defining an open protocol and independently operated nodes. Decentralization is a property of governance and operation, not simply the number of deployed servers.
+This is the target logical view, not a diagram of the current deployment. A first production implementation may use a limited validator group while defining an open protocol and independently operated nodes. Decentralization is a property of governance and operation, not simply the number of deployed servers.
+
+### Current POC deployment boundary
+
+The current runtime is a single Node.js process, bound to loopback by default (port 3000). Its HTTP API supports public-key-only participant registration, health and participant queries, submission of pre-encrypted signed envelopes, and ledger-event submission/query. Except for the minimal health endpoint, routes require a bearer token when one is configured. Binding outside loopback requires both a bearer token of at least 32 bytes and TLS; the executable reads the certificate and key from `TLS_CERT_PATH` and `TLS_KEY_PATH`. Browser origins are denied unless explicitly allowlisted in the runtime configuration. JSON request bodies are size-limited (1 MiB by default), and API responses are not cacheable. Participants, envelopes, event IDs, and ledger records are held in process memory; a restart loses this state. There is no distributed peer discovery, relay fabric, validator consensus, durable storage, or webhook delivery.
+
+The HTTP sandbox is for controlled integration testing only, not a trusted production service. Its public registration route rejects private-key fields; the envelope route accepts ciphertext already produced and signed by the participant, verifies the sender signature and ciphertext hash, and returns only the envelope. Keep key generation, signing, and encryption in participant-controlled gateways. The in-process helper APIs are intended for local tests and must not be used to load company private keys into a shared hosted process. Production still requires durable storage, business identity proofing and key lifecycle, scoped participant authorization, rate limiting, monitoring, and independent security review.
 
 ## 5. Node classes
 
@@ -182,51 +188,60 @@ Evaluate candidates for validator independence, finality, privacy leakage, gover
 
 Use a canonical document model with versioned profiles/codecs for GST e-invoice and e-way bill, ERP connectors, and future ONDC/Beckn, OCEN, and EDIFACT work. External rails are explicit disclosure boundaries: data sent to them is visible to those providers under applicable terms and law.
 
-Prefer ERP adapters in the participant's professional node or local agent. Cloud connectors should use narrowly scoped credentials and minimum required data. Record external submission results as signed events bound to the source document revision.
+#### Implemented: Zoho Books adapter prototype
+
+The POC has a Zoho Books-oriented HTTP client and invoice-sync adapter. The flow fetches an invoice, maps it to the canonical trade-document schema, creates an encrypted envelope, builds and submits a bilateral signed ledger proposal, then sends the resulting event metadata/status back to the ERP client. The flow is tested against a fake Zoho HTTP service; it is not yet verified against a live Zoho organization or production API contract. Configuration currently accepts a base URL, optional access token and organization ID, and request timeout. OAuth authorization/refresh, secret storage/rotation, real-account compatibility, retry/reconciliation, and operational audit remain future work. Other ERP and external-rail codecs are not implemented.
+
+#### Implemented: sovereign AI gateway foundation
+
+`CompanyAgentGateway` models each company's agent as acting through its own company-controlled gateway. It can sign versioned intents and check expiry, allowed actions, document IDs, and recipients. This establishes a local policy boundary; it does not connect independently hosted company gateways. There is no inter-company HTTP endpoint, queue/event bus, webhook callback, durable replay/idempotency store, or trusted cross-company key-discovery service yet. The signed-intent exchange must be treated as a protocol foundation, not live agent-to-agent networking.
+
+For production, keep ERP adapters and AI gateways in the participant's controlled environment where practical. Cloud connectors should use narrowly scoped credentials and minimum required data. Bind externally submitted results to a source document revision and record them as signed events. Add asynchronous delivery, acknowledgements, retries, idempotency, dead-letter handling, and auditable authorization before relying on cross-company events operationally.
 
 ## 12. Initial component boundaries
 
 ```text
-canonical/       document types, validation, serialization, profiles
-crypto/          reviewed primitives/protocol wrappers; keys outside shared UI code
-identity/        business credentials, delegation, discovery, revocation
-ledger/          event model, accounting rules, state, proofs, finality
-network/         peer discovery, transport, relay, sync, retries, spam controls
-storage/         encrypted payloads, replication, retention, backup/recovery
-consent/         scoped grants, disclosure packaging, verifier/audit interface
-connectors/      ERP and external-rail codecs at narrowest trusted boundary
-node-runtime/    node capabilities, configuration, monitoring, safe upgrades
+canonical/       implemented: canonical JSON, trade-document schema, validation
+crypto/          implemented POC: signing, verification, envelope encryption; production key custody pending
+identity/        pending: business credentials, public-key discovery, delegation, revocation
+ledger/          implemented POC: accounting event, bilateral proposal, signatures, in-memory append-only chain
+network/         implemented POC: single-process HTTP sandbox; peer discovery, relay, sync, and consensus pending
+storage/         pending: durable encrypted payloads, replication, retention, backup/recovery
+consent/         pending: scoped grants, disclosure packaging, verifier/audit interface
+connectors/      implemented prototype: Zoho Books adapter; other ERP and external-rail codecs pending
+agent-gateway/   implemented foundation: signed intents and local policy checks; transport/event delivery pending
+node-runtime/    pending: node capabilities, production configuration, monitoring, safe upgrades
 ```
 
 Canonicalization and validation should be deterministic and independently tested. Network-facing code validates size, version, authorization, signatures/proofs, replay, and state transitions before acceptance. Secrets and plaintext must not cross module boundaries without need.
 
 ## 13. Build sequence and exit criteria
 
-### Phase 0: protocol and threat model
+### Phase 0: protocol and threat model (partially implemented)
 
 Deliver actor/data-flow diagrams, privacy/metadata matrix, node capability model, trust assumptions, identity/key lifecycle, event specification, consensus/finality choice, and legal retention review. Exit when the team can state who sees each field, who validates each rule, when events are final, and how key loss, validator outage, disputes, and corrections work.
 
-### Phase 1: two-party private exchange
+### Phase 1: two-party private exchange (core primitives implemented; relay flow pending)
 
 Deliver canonical document, local keys, signed/encrypted message, untrusted relay, recipient verification, idempotent retries, encrypted local storage. Exit when a relay cannot read or silently alter a message and both parties independently verify the same revision.
 
-### Phase 2: distributed triple-entry ledger
+### Phase 2: distributed triple-entry ledger (single-process prototype implemented; distributed operation pending)
 
 Deliver event schema/accounting rules, multi-operator validator prototype, countersignature flow, append-only corrections/disputes, replicated verification, finality and recovery tests. Exit when independent nodes converge and reject tampered, replayed, unauthorized, or conflicting events under documented fault assumptions.
 
-### Phase 3: node classes and governance
+### Phase 3: node classes and governance (pending)
 
 Deliver node profiles, capability enforcement, signed releases/configuration, operator onboarding, and monitoring without sensitive payload logging. Exit when no single operator is required for ordinary exchange or verification and governance actions are independently auditable.
 
-### Phase 4: third-party verification
+### Phase 4: third-party verification (pending; agent gateway is not a verifier-grant system)
 
 Deliver signed scoped grants, verifier identity, authenticity-only and selected-field flows, consent audit, expiry/revocation checks, counterparty data protections. Exit when a verifier can prove only authorized claims and cannot retrieve unrelated records.
 
-### Phase 5: targeted ZK and external anchoring
+### Phase 5: targeted ZK and external anchoring (pending)
 
 Only proceed for a concrete use case. Deliver audited proof statements/circuits, test vectors, benchmarks, upgrade policy, and/or a privacy-reviewed anchoring prototype. Exit when it adds measurable capability over signatures/commitments/selective disclosure and passes independent review.
 
-### Phase 6: pilot and production hardening
+### Phase 6: pilot and production hardening (pending)
 
 Deliver independent security/cryptographic review, penetration test, backup/restore and key-compromise drills, incident response, load/finality tests, legal/compliance review, operator SLAs, support, and migration plans.
 
@@ -242,6 +257,8 @@ Deliver independent security/cryptographic review, penetration test, backup/rest
 | Validator outage or collusion | Explicit fault threshold, independent operators, monitoring, recovery/checkpoint procedures |
 | Third-party grant exceeds scope | Audience-bound grants, least privilege, expiry, independent verification and audit |
 | External-chain metadata/dependency risks | Privacy-review batch commitments; optional, replaceable anchoring |
+| Sandbox is mistaken for a production network | Keep it isolated; move all company key operations to participant gateways, add durable storage, rate limiting, production identity and authorization, operational monitoring, and independent security review before deployment |
+| ERP or agent integration is assumed to be production-ready | Validate live provider APIs and OAuth lifecycle; add trusted identity, transport, replay protection, retries, and operational monitoring before enabling real workflows |
 
 ## 15. Decisions required before architecture is fixed
 
@@ -260,4 +277,6 @@ Deliver independent security/cryptographic review, penetration test, backup/rest
 
 Build the exchange and triple-entry ledger as one protocol with separate privacy boundaries: signed accounting events and commitments form shared history; encrypted documents are delivered/replicated for authorized participants; scoped grants let third parties verify selected claims. Begin with signatures, encryption, and commitments. Introduce ZK proofs or external-chain anchors only when a concrete workflow demonstrates value. Choose consensus and node governance before selecting a blockchain product.
 
-The first proof of concept should demonstrate two independent business nodes, one untrusted relay, and one verifier: exchange an encrypted invoice, countersign a ledger event, independently verify integrity, and grant narrowly scoped authenticity verification without exposing the full document.
+The current POC demonstrates canonical document validation, signatures and encrypted envelopes, bilateral ledger-proposal verification, an in-memory hosted HTTP sandbox, a Zoho invoice-sync path exercised with a fake provider, and local signed-intent policy checks for a company-owned AI gateway. It does not yet demonstrate independently operated nodes, a blind untrusted relay, distributed consensus/finality, scoped third-party verifier grants, production Zoho OAuth, or transport between company gateways.
+
+The next architecture steps are to define production business identity and scoped authorization, separate the relay from participant-controlled signing/encryption, add durable storage and asynchronous delivery, and specify cross-company intent trust/replay semantics. The HTTP API now accepts public identities and pre-encrypted envelopes, but the sandbox remains an in-memory prototype; use it only behind controlled access and TLS. Production deployment still requires governance, operational, legal, and independent security review.

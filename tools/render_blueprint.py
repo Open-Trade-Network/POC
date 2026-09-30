@@ -47,7 +47,7 @@ def page_chrome(canvas, document):
     canvas.line(18 * mm, 15 * mm, width - 18 * mm, 15 * mm)
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(18 * mm, 10 * mm, "Decentralized Trade Data Exchange | Architecture Blueprint v0.1")
+    canvas.drawString(18 * mm, 10 * mm, "Decentralized Trade Data Exchange | Architecture Blueprint v0.2")
     canvas.drawRightString(width - 18 * mm, 10 * mm, str(document.page))
     canvas.restoreState()
 

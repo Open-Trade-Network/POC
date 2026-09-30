@@ -69,15 +69,14 @@ Each accepted event must be co-signed by both trusted counterparties. Event sequ
 
 ### 4. Hosted sandbox network
 
-A hosted in-memory network has been added so the protocol can be used in a live HTTP environment for sandbox integration. It exposes endpoints for:
+A single-process, in-memory HTTP sandbox is available for controlled integration testing. It binds to `127.0.0.1:3000` by default and exposes endpoints for:
 
-- participant registration
-- encrypted document submission
-- ledger event submission
-- ledger state queries
-- health checks
+- public-key-only participant registration and lookup
+- submission of participant-encrypted, signed envelopes
+- ledger event submission and lookup
+- a minimal health check
 
-This makes the POC suitable for developer integration testing and external client simulation.
+The server does not receive plaintext documents through the envelope endpoint. Participant gateways must encrypt and sign the envelope before submission. Request bodies are limited to 1 MiB by default, and responses are marked non-cacheable. When an API token is configured, every route except health requires its bearer token. Binding outside loopback requires both a bearer token of at least 32 bytes and TLS certificate/key files. Browser origins are not allowed by default. This sandbox is not production-ready: its state is lost on restart, and production identity governance, durable storage, rate limiting, and monitoring remain outstanding.
 
 ### 5. Zoho-first ERP integration
 
@@ -129,11 +128,15 @@ Run TypeScript build:
 
 npm run build
 
-Run the sandbox network:
+Run the sandbox locally (loopback only by default):
 
 npm run sandbox
 
-The sandbox listens on the default local port used by the hosted network runtime.
+For a controlled remote sandbox, configure a long random API token and TLS certificate/key before binding beyond loopback:
+
+HOST=0.0.0.0 NETWORK_API_TOKEN='replace-with-a-random-token-at-least-32-bytes' TLS_CERT_PATH='/path/to/cert.pem' TLS_KEY_PATH='/path/to/key.pem' npm run sandbox
+
+Do not use company private keys with the hosted process. Generate keys and create signed, encrypted envelopes inside participant-controlled gateways. The sandbox is in-memory and must not be treated as a production ledger service.
 
 ## Build sequence and status
 

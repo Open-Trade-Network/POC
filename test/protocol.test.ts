@@ -121,7 +121,7 @@ describe("bilateral append-only ledger prototype", () => {
 });
 
 describe("sandbox network hosting", () => {
-  it("exposes a hosted network endpoint for participants, envelopes, and ledger proposals", async () => {
+  it("accepts public identities and signed ciphertext without exposing secrets or plaintext", async () => {
     const network = new HostedTradeNetwork({ host: "127.0.0.1", port: 0 });
     await network.start();
 
@@ -133,29 +133,41 @@ describe("sandbox network hosting", () => {
       const sellerResponse = await fetch(`http://127.0.0.1:${network.port}/participants`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(seller),
+        body: JSON.stringify({
+          participantId: seller.participantId,
+          signingPublicKey: seller.signingPublicKey,
+          encryptionPublicKey: seller.encryptionPublicKey,
+        }),
       });
       expect(sellerResponse.status).toBe(201);
+      expect(await sellerResponse.json()).not.toHaveProperty("participant.signingPrivateKey");
 
       const buyerResponse = await fetch(`http://127.0.0.1:${network.port}/participants`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(buyer),
+        body: JSON.stringify({
+          participantId: buyer.participantId,
+          signingPublicKey: buyer.signingPublicKey,
+          encryptionPublicKey: buyer.encryptionPublicKey,
+        }),
       });
       expect(buyerResponse.status).toBe(201);
 
+      const envelope = await createEnvelope(invoice, seller, buyer.participantId, buyer.encryptionPublicKey);
       const envelopeResponse = await fetch(`http://127.0.0.1:${network.port}/documents/envelope`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          document: invoice,
-          senderId: seller.participantId,
-          recipientId: buyer.participantId,
-          createdAt: new Date().toISOString(),
-        }),
+        body: JSON.stringify({ envelope }),
       });
       expect(envelopeResponse.status).toBe(201);
-      await expect(envelopeResponse.json()).resolves.toMatchObject({ envelope: { header: { recipientId: buyer.participantId } } });
+      const envelopeBody = await envelopeResponse.json();
+      expect(envelopeBody).toMatchObject({ envelope: { header: { recipientId: buyer.participantId } } });
+      expect(envelopeBody).not.toHaveProperty("document");
+
+      const participantsResponse = await fetch(`http://127.0.0.1:${network.port}/participants`);
+      const participantsBody = await participantsResponse.json();
+      expect(JSON.stringify(participantsBody)).not.toContain(seller.signingPrivateKey);
+      expect(JSON.stringify(participantsBody)).not.toContain(buyer.encryptionPrivateKey);
 
       const proposal = await createLedgerProposal({
         sequence: 0,
@@ -173,6 +185,63 @@ describe("sandbox network hosting", () => {
       const ledgerBody = await ledgerResponse.json();
       expect(ledgerBody.record.sequence).toBe(0);
       expect(ledgerBody.record.parties).toEqual(["buyer-sandbox", "seller-sandbox"]);
+    } finally {
+      await network.stop();
+    }
+  });
+
+  it("requires a bearer token for non-loopback binding and protected requests", async () => {
+    const unprotected = new HostedTradeNetwork({ host: "0.0.0.0", port: 0 });
+    await expect(unprotected.start()).rejects.toThrow("A bearer API token is required");
+    const tokenWithoutTls = new HostedTradeNetwork({
+      host: "0.0.0.0",
+      port: 0,
+      apiToken: "0123456789abcdef0123456789abcdef",
+    });
+    await expect(tokenWithoutTls.start()).rejects.toThrow("TLS is required");
+
+    const network = new HostedTradeNetwork({
+      host: "127.0.0.1",
+      port: 0,
+      apiToken: "0123456789abcdef0123456789abcdef",
+    });
+    await network.start();
+
+    try {
+      const healthResponse = await fetch(`http://127.0.0.1:${network.port}/health`);
+      expect(healthResponse.status).toBe(200);
+
+      const unauthorizedResponse = await fetch(`http://127.0.0.1:${network.port}/participants`);
+      expect(unauthorizedResponse.status).toBe(401);
+
+      const authorizedResponse = await fetch(`http://127.0.0.1:${network.port}/participants`, {
+        headers: { authorization: "Bearer 0123456789abcdef0123456789abcdef" },
+      });
+      expect(authorizedResponse.status).toBe(200);
+    } finally {
+      await network.stop();
+    }
+  });
+
+  it("rejects private-key registration and request bodies over the configured limit", async () => {
+    const network = new HostedTradeNetwork({ host: "127.0.0.1", port: 0, maxRequestBodyBytes: 1024 });
+    await network.start();
+
+    try {
+      const participant = await createParticipantKeys("seller-private-key-rejected");
+      const privateKeyResponse = await fetch(`http://127.0.0.1:${network.port}/participants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(participant),
+      });
+      expect(privateKeyResponse.status).toBe(400);
+
+      const oversizedResponse = await fetch(`http://127.0.0.1:${network.port}/participants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ participantId: "x".repeat(2000) }),
+      });
+      expect(oversizedResponse.status).toBe(413);
     } finally {
       await network.stop();
     }
