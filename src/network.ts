@@ -7,7 +7,14 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { canonicalBytes, sha256Base64Url } from "./core/canonical.js";
 import { createEnvelope, type ParticipantKeyMaterial, type SignedEnvelope, verifyEnvelope } from "./core/crypto.js";
-import { type LedgerProposal, type LedgerRecord, verifyLedgerProposal } from "./core/ledger.js";
+import {
+  InMemoryTripleEntryLedger,
+  type LedgerProposal,
+  type LedgerRecord,
+  type TripleEntryEvent,
+  type TripleEntryEventRecord,
+  verifyLedgerProposal,
+} from "./core/ledger.js";
 import { TradeDocumentSchema, type TradeDocument } from "./core/schema.js";
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -44,6 +51,22 @@ const LedgerProposalSchema = z.object({
   }).strict()).length(2),
 }).strict();
 
+const TripleEntryEventSchema = z.object({
+  version: z.literal(1),
+  sequence: z.number().int().nonnegative(),
+  eventId: z.string().min(1).max(256),
+  transactionId: z.string().min(1).max(256),
+  commitment: z.string().min(1).max(256),
+  commitmentSalt: z.string().min(1).max(256).optional(),
+  previousHash: z.string().max(256),
+  sellerParticipantId: z.string().min(1).max(128),
+  buyerParticipantId: z.string().min(1).max(128),
+  kind: z.enum(["SUBMITTED", "ACCEPTED", "DISPUTED"]),
+  actorParticipantId: z.string().min(1).max(128),
+  occurredAt: z.string().datetime({ offset: true }),
+  signature: z.string().min(1).max(256),
+}).strict();
+
 class HttpError extends Error {
   constructor(readonly statusCode: number, message: string) {
     super(message);
@@ -77,6 +100,7 @@ export interface PublicParticipantIdentity {
 export interface HostedTradeNetworkState {
   participants: PublicParticipantIdentity[];
   ledger: LedgerRecord[];
+  teaEvents: TripleEntryEventRecord[];
   envelopes: SignedEnvelope[];
 }
 
@@ -134,6 +158,7 @@ export class HostedTradeNetwork {
   private readonly envelopeIds = new Set<string>();
   private readonly eventIds = new Set<string>();
   private ledgerRecords: LedgerRecord[] = [];
+  private readonly teaLedger: InMemoryTripleEntryLedger;
   private readonly apiToken: string | undefined;
   private readonly allowedOrigins: Set<string>;
   private readonly maxRequestBodyBytes: number;
@@ -146,6 +171,7 @@ export class HostedTradeNetwork {
     this.allowedOrigins = new Set(options.allowedOrigins ?? []);
     this.maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
     this.tls = options.tls;
+    this.teaLedger = new InMemoryTripleEntryLedger(this.trustedSigningKeys);
     if (this.apiToken && Buffer.byteLength(this.apiToken) < 32) {
       throw new Error("API token must be at least 32 bytes");
     }
@@ -170,6 +196,10 @@ export class HostedTradeNetwork {
     }));
   }
 
+  getParticipantIdentity(participantId: string): PublicParticipantIdentity | undefined {
+    return this.getParticipants().find((participant) => participant.participantId === participantId);
+  }
+
   getLedgerRecords(): LedgerRecord[] {
     return structuredClone(this.ledgerRecords);
   }
@@ -178,6 +208,7 @@ export class HostedTradeNetwork {
     return {
       participants: this.getParticipants(),
       ledger: this.getLedgerRecords(),
+      teaEvents: this.getTripleEntryEvents(),
       envelopes: structuredClone(this.envelopes),
     };
   }
@@ -207,6 +238,10 @@ export class HostedTradeNetwork {
     });
     this.trustedSigningKeys.set(participant.participantId, participant.signingPublicKey);
     return { ...participant };
+  }
+
+  registerParticipantIdentity(participant: PublicParticipantIdentity): PublicParticipantIdentity {
+    return this.registerPublicParticipant(PublicParticipantSchema.parse(participant));
   }
 
   async createEnvelopeForDocument(
@@ -274,6 +309,25 @@ export class HostedTradeNetwork {
     this.ledgerRecords.push(record);
     this.eventIds.add(record.eventId);
     return structuredClone(record);
+  }
+
+  async submitTripleEntryEvent(event: TripleEntryEvent): Promise<TripleEntryEventRecord> {
+    if (!this.participants.has(event.sellerParticipantId) || !this.participants.has(event.buyerParticipantId)) {
+      throw new HttpError(400, "Triple-entry event parties must be registered participants");
+    }
+    try {
+      return await this.teaLedger.append(event);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : "Triple-entry event is invalid");
+    }
+  }
+
+  getTripleEntryEvents(): TripleEntryEventRecord[] {
+    return this.teaLedger.getRecords();
+  }
+
+  getTripleEntryTransactionStatus(transactionId: string) {
+    return this.teaLedger.getTransactionStatus(transactionId);
   }
 
   async start(): Promise<this> {
@@ -383,8 +437,37 @@ export class HostedTradeNetwork {
 
       if (request.method === "POST" && url.pathname === "/participants") {
         const body = PublicParticipantSchema.parse(await readRequestBody(request, this.maxRequestBodyBytes));
-        const participant = this.registerPublicParticipant(body);
+        const participant = this.registerParticipantIdentity(body);
         this.sendJson(response, 201, { participant });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/tea/events") {
+        this.sendJson(response, 200, { events: this.getTripleEntryEvents() });
+        return;
+      }
+
+      const transactionStatusMatch = /^\/tea\/transactions\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && transactionStatusMatch?.[1]) {
+        const transactionId = decodeURIComponent(transactionStatusMatch[1]);
+        const status = this.getTripleEntryTransactionStatus(transactionId);
+        if (!status) {
+          this.sendJson(response, 404, { error: "Transaction not found" });
+          return;
+        }
+        this.sendJson(response, 200, {
+          transactionId,
+          status,
+          events: this.getTripleEntryEvents().filter((event) => event.transactionId === transactionId),
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/tea/events") {
+        const body = z.object({ event: TripleEntryEventSchema }).strict()
+          .parse(await readRequestBody(request, this.maxRequestBodyBytes));
+        const record = await this.submitTripleEntryEvent(body.event);
+        this.sendJson(response, 201, { record });
         return;
       }
 

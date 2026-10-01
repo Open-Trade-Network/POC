@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Clickable mock of the Zoho Books invoice acceptance and dispute workflow.">
+  <title>Invoice Review | Trade Operations</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #183433;
+      --muted: #687b78;
+      --line: #d6e0dc;
+      --paper: #fff;
+      --canvas: #f1f5f2;
+      --nav: #153c3b;
+      --nav-muted: #afc7c0;
+      --teal: #087d71;
+      --teal-soft: #e2f2ec;
+      --gold: #98600a;
+      --gold-soft: #fbf0d5;
+      --red: #a33831;
+      --red-soft: #fae8e4;
+      --shadow: 0 12px 34px rgb(20 56 50 / 7%);
+      font-family: Aptos, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--canvas);
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background-color: var(--canvas);
+      background-image: repeating-linear-gradient(135deg, rgb(21 60 59 / 2%) 0 1px, transparent 1px 12px);
+    }
+    button, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, a:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 3px solid #8cc8ba;
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 28px;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      color: #c7eadb;
+      background: var(--nav);
+      font: 700 13px/1 Georgia, serif;
+    }
+    .brand-name { font: 700 16px/1.1 Georgia, serif; }
+    .brand-subtitle { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .top-actions { display: flex; align-items: center; gap: 12px; }
+    .sandbox-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid #cfe0d7;
+      border-radius: 4px;
+      color: #38695d;
+      background: #f5faf6;
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .sandbox-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #4e9d75; }
+    .reset-button, .button-secondary {
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--ink);
+      background: var(--paper);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .reset-button:hover, .button-secondary:hover { background: #f7faf7; border-color: #97b8ab; }
+
+    .layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: calc(100vh - 68px); }
+    .sidebar { display: flex; flex-direction: column; padding: 23px 13px 18px; color: white; background: var(--nav); }
+    .nav-label { padding: 0 12px; margin: 2px 0 10px; color: var(--nav-muted); font-size: 9px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+    .nav-item { display: flex; align-items: center; gap: 11px; min-height: 40px; padding: 0 12px; margin: 2px 0; border-radius: 4px; color: var(--nav-muted); font-size: 12px; }
+    .nav-item.active { color: white; background: #285650; box-shadow: inset 3px 0 #b8dfc9; }
+    .nav-mark { width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 3px; font-size: 8px; font-weight: 750; }
+    .nav-spacer { flex: 1; }
+    .network-card { padding: 13px 12px; border-top: 1px solid rgb(255 255 255 / 14%); color: var(--nav-muted); font-size: 10px; line-height: 1.6; }
+    .network-card strong { display: block; color: white; font-size: 11px; }
+
+    .content { width: min(1380px, 100%); margin: 0 auto; padding: 26px 30px 38px; }
+    .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 17px; }
+    .eyebrow { margin: 0 0 8px; color: var(--teal); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0; font: 500 30px/1.08 Georgia, serif; }
+    h2 { margin: 0; font: 500 18px/1.2 Georgia, serif; }
+    .page-description { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+    .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid #ead59e; border-radius: 4px; color: var(--gold); background: var(--gold-soft); font-size: 10px; font-weight: 750; white-space: nowrap; }
+    .status-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .status-pill.confirmed { border-color: #b7ddcf; color: var(--teal); background: var(--teal-soft); }
+    .status-pill.disputed { border-color: #edc7c1; color: var(--red); background: var(--red-soft); }
+    .notice { display: flex; gap: 9px; padding: 10px 13px; margin-bottom: 17px; border-left: 3px solid #d99b39; color: #695529; background: #fff9e9; font-size: 10px; line-height: 1.5; }
+    .notice strong { color: #4f411f; }
+
+    .panel { border: 1px solid var(--line); border-radius: 5px; background: var(--paper); box-shadow: var(--shadow); }
+    .flow-panel { padding: 16px 18px 13px; margin-bottom: 19px; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .section-kicker { color: var(--muted); font-size: 10px; }
+    .flow-scroll { overflow-x: auto; padding: 18px 1px 5px; }
+    .flow-track { display: flex; align-items: center; min-width: 740px; }
+    .flow-node { flex: 0 0 137px; min-height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: #fbfcfb; }
+    .flow-node strong { color: var(--ink); font-size: 10px; }
+    .flow-node small { font-size: 9px; }
+    .flow-node.done { border-color: #b9dacc; color: #326d5b; background: #f0f8f3; }
+    .flow-node.current { border-color: #d9b458; color: #795711; background: #fff8e8; box-shadow: 0 0 0 2px rgb(217 180 88 / 14%); }
+    .flow-node.confirmed { border-color: #8bc5b1; color: var(--teal); background: var(--teal-soft); }
+    .flow-node.disputed { border-color: #dfa49c; color: var(--red); background: var(--red-soft); }
+    .flow-link { flex: 0 0 26px; height: 1px; background: #c5d2ce; }
+    .flow-branch { width: 204px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-left: 3px; }
+    .flow-branch .flow-node { min-height: 51px; padding: 7px; }
+    .branch-label { margin-top: 6px; color: var(--muted); font-size: 8px; text-align: center; }
+    .flow-legend { display: flex; flex-wrap: wrap; gap: 17px; margin-top: 7px; color: var(--muted); font-size: 9px; }
+    .flow-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 8px; height: 8px; border: 1px solid #aebdb7; border-radius: 2px; background: #fff; }
+    .swatch.current { border-color: #d9b458; background: #fff0c7; }
+    .swatch.done { border-color: #8bc5b1; background: #d8eee5; }
+
+    .workspace-bar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    .role-control { display: inline-flex; padding: 3px; border: 1px solid #cbd8d3; border-radius: 5px; background: #e8eeea; }
+    .role-button { min-height: 30px; padding: 0 11px; border: 0; border-radius: 3px; color: #536763; background: transparent; font-size: 10px; font-weight: 750; }
+    .role-button[aria-pressed="true"] { color: white; background: var(--nav); }
+    .view-caption { color: var(--muted); font-size: 10px; }
+    .work-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(270px, .78fr); gap: 16px; align-items: start; }
+    .panel-head { display: flex; justify-content: space-between; gap: 14px; padding: 16px 18px 14px; border-bottom: 1px solid #e4eae7; }
+    .panel-head p { margin: 6px 0 0; color: var(--muted); font-size: 10px; }
+    .doc-number { color: #667875; font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 18px; }
+    .label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .party-name { font-size: 12px; font-weight: 750; }
+    .party-meta { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+    .totals { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0 18px 15px; }
+    .total-cell { padding: 9px 10px; border: 1px solid var(--line); border-right: 0; }
+    .total-cell:first-child { border-radius: 4px 0 0 4px; }
+    .total-cell:last-child { border-right: 1px solid var(--line); border-radius: 0 4px 4px 0; }
+    .total-value { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .total-value.grand { color: var(--teal); }
+    .total-caption { margin-top: 4px; color: var(--muted); font-size: 8px; }
+    .table-wrap { overflow-x: auto; padding: 0 17px 13px; }
+    table { width: 100%; min-width: 400px; border-collapse: collapse; }
+    th { padding: 8px; border-bottom: 1px solid #cfdad5; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+    td { padding: 9px 8px; border-bottom: 1px solid #e6ece8; font-size: 10px; }
+    th:last-child, td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    .line-muted { color: var(--muted); }
+    .invoice-total { display: flex; justify-content: space-between; padding: 10px 25px 14px; font-size: 11px; font-weight: 800; }
+    .commitment { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 11px 18px; border-top: 1px solid #e4eae7; background: #f8faf8; }
+    .commitment span { color: var(--muted); font-size: 9px; }
+    .commitment code { color: #3e5651; font: 9px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; text-align: right; }
+
+    .side-column { display: grid; gap: 13px; }
+    .decision-panel { padding: 16px 17px; }
+    .decision-copy { margin: 7px 0 13px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .verify-check { display: flex; gap: 8px; padding: 10px; margin: 11px 0 13px; border: 1px solid #dbe5df; border-radius: 4px; color: #435c55; background: #f8faf8; font-size: 9px; line-height: 1.45; }
+    .verify-check input { margin: 1px 0 0; accent-color: var(--teal); }
+    .button-stack { display: grid; gap: 8px; }
+    .button-primary, .button-dispute, .button-muted { min-height: 37px; padding: 0 12px; border-radius: 4px; font-size: 10px; font-weight: 800; }
+    .button-primary { border: 1px solid #087368; color: white; background: var(--teal); }
+    .button-primary:hover:not(:disabled) { background: #06665e; }
+    .button-primary:disabled { cursor: not-allowed; border-color: #c5d3ce; color: #81908c; background: #e9efeb; }
+    .button-dispute { border: 1px solid #e1b2ac; color: var(--red); background: white; }
+    .button-dispute:hover { background: #fff7f5; }
+    .button-muted { border: 1px solid var(--line); color: #59706a; background: #f7faf7; }
+    .decision-note { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+    .terminal { padding: 11px; border-radius: 4px; color: #356956; background: var(--teal-soft); font-size: 10px; line-height: 1.5; }
+    .terminal.disputed { color: var(--red); background: var(--red-soft); }
+
+    .zoho-panel { overflow: hidden; }
+    .zoho-head { display: flex; align-items: center; gap: 9px; padding: 13px 15px; border-bottom: 1px solid #e5ebe8; }
+    .zoho-mark { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid #cfd9d4; border-radius: 4px; color: #e25142; background: #fff9f8; font-size: 10px; font-weight: 850; }
+    .zoho-title { font-size: 10px; font-weight: 800; }
+    .zoho-sub { margin-top: 3px; color: var(--muted); font-size: 8px; }
+    .sync-list { padding: 5px 15px 10px; }
+    .sync-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #edf1ef; font-size: 9px; }
+    .sync-row:last-child { border-bottom: 0; }
+    .sync-row span:first-child { color: var(--muted); }
+    .sync-row strong { text-align: right; }
+    .sync-state { color: var(--gold); }
+    .sync-state.confirmed { color: var(--teal); }
+    .sync-state.disputed { color: var(--red); }
+
+    .events { margin-top: 16px; }
+    .events-head { padding: 14px 17px; border-bottom: 1px solid #e5ebe8; }
+    .events-list { padding: 3px 17px 9px; }
+    .event-row { display: grid; grid-template-columns: 16px 1fr auto; gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid #edf1ef; }
+    .event-row:last-child { border-bottom: 0; }
+    .event-dot { width: 8px; height: 8px; margin: 3px auto 0; border: 2px solid #7caa99; border-radius: 50%; background: white; }
+    .event-dot.disputed { border-color: #c56d62; }
+    .event-title { font-size: 9px; font-weight: 800; }
+    .event-detail { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+    .event-time { color: var(--muted); font-size: 8px; white-space: nowrap; }
+    .footer-note { padding: 15px 2px 0; color: #71827e; font-size: 8px; line-height: 1.5; }
+    dialog { width: min(460px, calc(100vw - 28px)); padding: 0; border: 1px solid #cad8d2; border-radius: 6px; color: var(--ink); background: var(--paper); box-shadow: 0 24px 80px rgb(8 35 32 / 25%); }
+    dialog::backdrop { background: rgb(12 35 33 / 42%); }
+    .dialog-head { padding: 17px 19px 13px; border-bottom: 1px solid var(--line); }
+    .dialog-head p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .dialog-body { display: grid; gap: 12px; padding: 16px 19px; }
+    .dialog-body label { display: grid; gap: 6px; color: #4a625c; font-size: 9px; font-weight: 750; }
+    select, textarea { width: 100%; padding: 9px; border: 1px solid #cbd8d3; border-radius: 4px; color: var(--ink); background: white; font-size: 10px; }
+    textarea { min-height: 82px; resize: vertical; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 19px 17px; }
+    .toast { position: fixed; right: 20px; bottom: 18px; max-width: min(360px, calc(100vw - 36px)); padding: 11px 14px; border: 1px solid #226457; border-radius: 4px; color: white; background: #17473f; box-shadow: var(--shadow); font-size: 10px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 62px minmax(0, 1fr); }
+      .sidebar { padding-inline: 9px; }
+      .nav-label, .nav-item span:last-child, .network-card { display: none; }
+      .nav-item { justify-content: center; padding: 0; }
+      .nav-mark { width: 23px; height: 23px; }
+      .work-grid { grid-template-columns: minmax(0, 1.2fr) minmax(250px, .8fr); }
+    }
+    @media (max-width: 720px) {
+      .topbar { height: 59px; padding-inline: 13px; }
+      .brand-subtitle { display: none; }
+      .top-actions { gap: 7px; }
+      .sandbox-tag { padding: 6px 7px; font-size: 8px; }
+      .reset-button { padding-inline: 8px; font-size: 9px; }
+      .layout { display: block; min-height: calc(100vh - 59px); }
+      .sidebar { display: none; }
+      .content { padding: 19px 13px 28px; }
+      .page-heading { align-items: flex-start; flex-direction: column; gap: 11px; }
+      h1 { font-size: 26px; }
+      .flow-panel { padding: 14px 12px; }
+      .section-kicker { display: none; }
+      .workspace-bar { align-items: flex-start; flex-direction: column; }
+      .work-grid { grid-template-columns: 1fr; }
+      .side-column { grid-row: 1; }
+      .parties { gap: 10px; padding-inline: 13px; }
+      .totals { padding-inline: 12px; }
+      .total-cell { padding: 8px 6px; }
+      .total-value { font-size: 11px; }
+      .panel-head { padding-inline: 13px; }
+      .table-wrap { padding-inline: 9px; }
+      .invoice-total { padding-inline: 16px; }
+      .commitment { padding-inline: 13px; }
+      .commitment code { text-align: left; }
+      .events { margin-top: 13px; }
+      .event-row { grid-template-columns: 14px 1fr; }
+      .event-time { grid-column: 2; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">OT</div>
+      <div><div class="brand-name">Trade Operations</div><div class="brand-subtitle">Intercompany documents</div></div>
+    </div>
+    <div class="top-actions">
+      <span class="sandbox-tag">Sandbox mock</span>
+      <button class="reset-button" id="reset-demo" type="button">Reset scenario</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="nav-label">Workspace</div>
+      <div class="nav-item"><span class="nav-mark" aria-hidden="true">01</span><span>Overview</span></div>
+      <div class="nav-item active"><span class="nav-mark" aria-hidden="true">02</span><span>Trade documents</span></div>
+      <a class="nav-item" href="#activity"><span class="nav-mark" aria-hidden="true">03</span><span>Event history</span></a>
+      <div class="nav-spacer"></div>
+      <div class="network-card"><strong>Native TEA sandbox</strong>INR accounting unit<br>No issued currency<br>No external chain</div>
+    </aside>
+
+    <main class="content" id="review">
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">Zoho Books bridge / transaction review</p>
+          <h1>Invoice acceptance</h1>
+          <p class="page-description">Review the shared transaction, verify its commitment, then accept or dispute it.</p>
+        </div>
+        <span class="status-pill" id="status-pill">Awaiting counterparty</span>
+      </div>
+
+      <div class="notice"><strong>Mock only</strong><span>Actions simulate TEA events in this page. No live Zoho account or network request is made.</span></div>
+
+      <section class="panel flow-panel" aria-labelledby="flow-title">
+        <div class="section-head"><h2 id="flow-title">Acceptance / dispute flow</h2><span class="section-kicker">A submission stays provisional until the other party responds.</span></div>
+        <div class="flow-scroll" aria-label="Flowchart: Zoho invoice, signed seller submission, provisional network event, buyer review, then acceptance or dispute">
+          <div class="flow-track">
+            <div class="flow-node done" id="step-zoho"><strong>Zoho Books</strong><small>Invoice imported</small></div>
+            <div class="flow-link" aria-hidden="true"></div>
+            <div class="flow-node done" id="step-submit"><strong>Seller signs</strong><small>Encrypted invoice + commitment</small></div>
+            <div class="flow-link" aria-hidden="true"></div>
+            <div class="flow-node current" id="step-provisional"><strong>Provisional</strong><small>Awaiting buyer review</small></div>
+            <div class="flow-link" aria-hidden="true"></div>
+            <div class="flow-node" id="step-review"><strong>Buyer verifies</strong><small>Invoice + posting commitment</small></div>
+            <div class="flow-link" aria-hidden="true"></div>
+            <div class="flow-branch">
+              <div><div class="flow-node" id="step-confirmed"><strong>Confirmed</strong><small>Buyer signed acceptance</small></div><div class="branch-label">ACCEPTED</div></div>
+              <div><div class="flow-node" id="step-disputed"><strong>Disputed</strong><small>Reason appended</small></div><div class="branch-label">DISPUTED</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="flow-legend" aria-label="Flowchart legend">
+          <span><i class="swatch done"></i>Completed event</span><span><i class="swatch current"></i>Current state</span><span>Corrections append new events; history is not edited.</span>
+        </div>
+      </section>
+
+      <div class="workspace-bar">
+        <div class="role-control" role="group" aria-label="Choose mock participant view">
+          <button class="role-button" id="buyer-role" type="button" aria-pressed="true">Buyer workspace</button>
+          <button class="role-button" id="seller-role" type="button" aria-pressed="false">Seller workspace</button>
+        </div>
+        <span class="view-caption" id="view-caption">Review an invoice received from Ember Paper Co.</span>
+      </div>
+
+      <div class="work-grid">
+        <section class="panel" aria-labelledby="invoice-title">
+          <div class="panel-head">
+            <div><h2 id="invoice-title">Tax invoice</h2><p>Source: Zoho Books / linked to a signed TEA submission</p></div>
+            <div class="doc-number">INV-1001</div>
+          </div>
+          <div class="parties">
+            <div><span class="label">Seller</span><div class="party-name">Ember Paper Co.</div><div class="party-meta">Participant: seller-zoho<br>Zoho organization: EMBER-IN</div></div>
+            <div><span class="label">Buyer</span><div class="party-name">Aster Retail Pvt Ltd</div><div class="party-meta">Participant: buyer-aster<br>Zoho organization: ASTER-01</div></div>
+          </div>
+          <div class="totals" aria-label="Invoice totals">
+            <div class="total-cell"><div class="total-value">INR 100.00</div><div class="total-caption">Taxable value</div></div>
+            <div class="total-cell"><div class="total-value">INR 18.00</div><div class="total-caption">GST</div></div>
+            <div class="total-cell"><div class="total-value grand">INR 118.00</div><div class="total-caption">Invoice total</div></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Description</th><th>Tax code</th><th>Amount</th></tr></thead>
+              <tbody>
+                <tr><td>Packaging paper, 1 lot</td><td class="line-muted">GST 18%</td><td>INR 100.00</td></tr>
+                <tr><td>Central GST</td><td class="line-muted">CGST</td><td>INR 9.00</td></tr>
+                <tr><td>State GST</td><td class="line-muted">SGST</td><td>INR 9.00</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="invoice-total"><span>Total payable</span><span>INR 118.00</span></div>
+          <div class="commitment"><span>Salted transaction commitment</span><code>sha256: 7c42a0b1...d91e</code></div>
+        </section>
+
+        <aside class="side-column" aria-label="Decision and Zoho TEA status">
+          <section class="panel decision-panel" aria-labelledby="decision-title">
+            <h2 id="decision-title">Buyer decision</h2>
+            <p class="decision-copy" id="decision-copy">Review the invoice and verify that its accounting commitment matches before signing the counterparty decision.</p>
+            <label class="verify-check" id="verify-label"><input id="verified-check" type="checkbox"><span>I reviewed the invoice and verified the transaction commitment.</span></label>
+            <div class="button-stack" id="decision-actions">
+              <button class="button-primary" id="accept-action" type="button" disabled>Accept invoice</button>
+              <button class="button-dispute" id="dispute-action" type="button">Raise a dispute</button>
+            </div>
+            <p class="decision-note" id="decision-note">Acceptance is signed by the buyer. The seller cannot accept on the buyer's behalf.</p>
+            <div class="terminal" id="terminal-state" hidden></div>
+          </section>
+
+          <section class="panel zoho-panel" aria-labelledby="zoho-title">
+            <div class="zoho-head"><div class="zoho-mark" aria-hidden="true">Z</div><div><div class="zoho-title" id="zoho-title">Zoho Books sync</div><div class="zoho-sub">TEA custom-field mirror / not payment status</div></div></div>
+            <div class="sync-list">
+              <div class="sync-row"><span>Invoice</span><strong>INV-1001</strong></div>
+              <div class="sync-row"><span>TEA review state</span><strong class="sync-state" id="zoho-status">Pending counterparty</strong></div>
+              <div class="sync-row"><span>Latest event</span><strong id="zoho-event">SUBMITTED</strong></div>
+              <div class="sync-row"><span>Payment state</span><strong>Unchanged</strong></div>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="panel events" id="activity" aria-labelledby="events-title">
+        <div class="events-head"><h2 id="events-title">Append-only event history</h2></div>
+        <div class="events-list" id="events-list" aria-live="polite"></div>
+      </section>
+      <p class="footer-note">Demo data only. INR is the accounting denomination; the protocol issues no currency and uses no external blockchain. This mock does not call Zoho or the hosted network.</p>
+    </main>
+  </div>
+
+  <dialog id="dispute-dialog" aria-labelledby="dispute-title">
+    <form id="dispute-form">
+      <div class="dialog-head"><h2 id="dispute-title">Raise a dispute</h2><p>A dispute is appended as a new signed event. It does not alter the seller's submission.</p></div>
+      <div class="dialog-body">
+        <label for="dispute-reason">Reason
+          <select id="dispute-reason" required>
+            <option value="">Choose a reason</option>
+            <option>Amount differs from purchase order</option>
+            <option>Tax classification or amount is incorrect</option>
+            <option>Goods or services not received</option>
+            <option>Duplicate invoice</option>
+            <option>Other</option>
+          </select>
+        </label>
+        <label for="dispute-note">Evidence or explanation
+          <textarea id="dispute-note" required maxlength="500" placeholder="Describe the mismatch. Do not include credentials."></textarea>
+        </label>
+      </div>
+      <div class="dialog-actions"><button class="button-muted" id="cancel-dispute" type="button">Cancel</button><button class="button-dispute" type="submit">Append dispute event</button></div>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const initialState = {
+      status: "PROVISIONAL",
+      role: "buyer",
+      reason: "",
+      verified: false,
+      events: [{ kind: "SUBMITTED", actor: "Ember Paper Co.", detail: "Seller signed the invoice and submitted encrypted data with a salted transaction commitment.", time: "10:42 IST" }],
+    };
+    let state = structuredClone(initialState);
+    let toastTimer;
+
+    const view = {
+      status: document.getElementById("status-pill"),
+      caption: document.getElementById("view-caption"),
+      checkbox: document.getElementById("verified-check"),
+      accept: document.getElementById("accept-action"),
+      dispute: document.getElementById("dispute-action"),
+      actions: document.getElementById("decision-actions"),
+      copy: document.getElementById("decision-copy"),
+      note: document.getElementById("decision-note"),
+      terminal: document.getElementById("terminal-state"),
+      zohoStatus: document.getElementById("zoho-status"),
+      zohoEvent: document.getElementById("zoho-event"),
+      events: document.getElementById("events-list"),
+    };
+
+    function addEvent(kind, actor, detail) {
+      const time = new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }).format(new Date());
+      state.events.push({ kind, actor, detail, time: `${time} IST` });
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 2800);
+    }
+
+    function setFlowNode(id, stateName) {
+      const node = document.getElementById(id);
+      node.classList.remove("done", "current", "confirmed", "disputed");
+      if (stateName) node.classList.add(stateName);
+    }
+
+    function renderEvents() {
+      view.events.replaceChildren();
+      for (const event of state.events) {
+        const row = document.createElement("div");
+        row.className = "event-row";
+        const dot = document.createElement("span");
+        dot.className = `event-dot${event.kind === "DISPUTED" ? " disputed" : ""}`;
+        dot.setAttribute("aria-hidden", "true");
+        const copy = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "event-title";
+        title.textContent = `${event.actor} / ${event.kind}`;
+        const detail = document.createElement("div");
+        detail.className = "event-detail";
+        detail.textContent = event.detail;
+        copy.append(title, detail);
+        const time = document.createElement("time");
+        time.className = "event-time";
+        time.textContent = event.time;
+        row.append(dot, copy, time);
+        view.events.append(row);
+      }
+    }
+
+    function render() {
+      const isBuyer = state.role === "buyer";
+      document.getElementById("buyer-role").setAttribute("aria-pressed", String(isBuyer));
+      document.getElementById("seller-role").setAttribute("aria-pressed", String(!isBuyer));
+      view.caption.textContent = isBuyer
+        ? "Review an invoice received from Ember Paper Co."
+        : "You submitted this invoice; the buyer controls the response.";
+
+      const labels = { PROVISIONAL: "Awaiting counterparty", CONFIRMED: "Confirmed by both parties", DISPUTED: "Disputed by buyer" };
+      view.status.textContent = labels[state.status];
+      view.status.className = `status-pill${state.status === "CONFIRMED" ? " confirmed" : state.status === "DISPUTED" ? " disputed" : ""}`;
+      view.zohoStatus.textContent = state.status === "PROVISIONAL" ? "Pending counterparty" : labels[state.status];
+      view.zohoStatus.className = `sync-state${state.status === "CONFIRMED" ? " confirmed" : state.status === "DISPUTED" ? " disputed" : ""}`;
+      view.zohoEvent.textContent = state.events.at(-1).kind;
+
+      setFlowNode("step-zoho", "done");
+      setFlowNode("step-submit", "done");
+      setFlowNode("step-provisional", state.status === "PROVISIONAL" ? "current" : "done");
+      setFlowNode("step-review", state.status === "PROVISIONAL" ? (state.verified ? "current" : "") : "done");
+      setFlowNode("step-confirmed", state.status === "CONFIRMED" ? "confirmed" : "");
+      setFlowNode("step-disputed", state.status === "DISPUTED" ? "disputed" : "");
+
+      view.checkbox.checked = state.verified;
+      view.checkbox.disabled = state.status !== "PROVISIONAL" || !isBuyer;
+      view.accept.disabled = state.status !== "PROVISIONAL" || !isBuyer || !state.verified;
+      view.dispute.disabled = state.status !== "PROVISIONAL" || !isBuyer;
+      view.actions.hidden = state.status !== "PROVISIONAL" || !isBuyer;
+      view.terminal.hidden = state.status === "PROVISIONAL" && isBuyer;
+      view.terminal.className = `terminal${state.status === "DISPUTED" ? " disputed" : ""}`;
+      view.note.hidden = state.status !== "PROVISIONAL" || !isBuyer;
+
+      if (state.status === "PROVISIONAL" && !isBuyer) {
+        view.copy.textContent = "Your signed submission is recorded. Aster Retail must verify the invoice and respond; you cannot accept on its behalf.";
+        view.terminal.textContent = "Waiting for buyer response. The Zoho invoice remains pending counterparty review.";
+      } else if (state.status === "CONFIRMED") {
+        view.copy.textContent = "The buyer's signed acceptance is appended to the same transaction history.";
+        view.terminal.textContent = "Confirmed. Both parties can reconcile this shared transaction with their own Zoho Books records.";
+      } else if (state.status === "DISPUTED") {
+        view.copy.textContent = "The buyer's dispute is appended; the original submission remains unchanged.";
+        view.terminal.textContent = `Disputed: ${state.reason}. The seller can review the event and issue a separate correction or response.`;
+      } else {
+        view.copy.textContent = "Review the invoice and verify that its accounting commitment matches before signing the counterparty decision.";
+      }
+      renderEvents();
+    }
+
+    document.getElementById("buyer-role").addEventListener("click", () => { state.role = "buyer"; render(); });
+    document.getElementById("seller-role").addEventListener("click", () => { state.role = "seller"; render(); });
+    view.checkbox.addEventListener("change", (event) => { state.verified = event.target.checked; render(); });
+    view.accept.addEventListener("click", () => {
+      if (state.status !== "PROVISIONAL" || !state.verified || state.role !== "buyer") return;
+      state.status = "CONFIRMED";
+      addEvent("ACCEPTED", "Aster Retail Pvt Ltd", "Buyer verified the transaction commitment and signed acceptance.");
+      render();
+      showToast("Acceptance appended. Both workspaces show confirmed.");
+    });
+    view.dispute.addEventListener("click", () => document.getElementById("dispute-dialog").showModal());
+    document.getElementById("cancel-dispute").addEventListener("click", () => document.getElementById("dispute-dialog").close());
+    document.getElementById("dispute-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const reason = document.getElementById("dispute-reason").value;
+      const note = document.getElementById("dispute-note").value.trim();
+      if (!reason || !note || state.status !== "PROVISIONAL" || state.role !== "buyer") return;
+      state.status = "DISPUTED";
+      state.reason = reason;
+      addEvent("DISPUTED", "Aster Retail Pvt Ltd", `${reason}: ${note}`);
+      document.getElementById("dispute-dialog").close();
+      event.target.reset();
+      render();
+      showToast("Dispute appended. The original submission was not changed.");
+    });
+    document.getElementById("reset-demo").addEventListener("click", () => {
+      state = structuredClone(initialState);
+      render();
+      showToast("Scenario reset to provisional.");
+    });
+    render();
+  </script>
+</body>
+</html>

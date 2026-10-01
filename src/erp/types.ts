@@ -1,4 +1,5 @@
-import type { LedgerRecord } from "../core/ledger.js";
+import type { SemanticAccountingTransaction } from "../core/accounting.js";
+import type { TripleEntryEventRecord } from "../core/ledger.js";
 import type { SignedEnvelope } from "../core/crypto.js";
 import type { TradeDocument } from "../core/schema.js";
 
@@ -25,8 +26,12 @@ export interface ZohoInvoicePayload {
   customer_name?: string;
   date?: string;
   currency_code?: string;
-  total?: number;
-  tax_total?: number;
+  total?: number | string;
+  tax_total?: number | string;
+  taxes?: Array<{
+    tax_name?: string;
+    tax_amount?: number | string;
+  }>;
   line_items?: ZohoInvoiceLineItem[];
 }
 
@@ -39,5 +44,7 @@ export interface SyncInvoiceResult {
   invoiceId: string;
   document: TradeDocument;
   envelope: SignedEnvelope;
-  ledgerRecord: LedgerRecord;
+  accountingTransaction: SemanticAccountingTransaction;
+  teaEventRecord: TripleEntryEventRecord;
+  status: "PROVISIONAL";
 }

@@ -74,9 +74,9 @@ This is the target logical view, not a diagram of the current deployment. A firs
 
 ### Current POC deployment boundary
 
-The current runtime is a single Node.js process, bound to loopback by default (port 3000). Its HTTP API supports public-key-only participant registration, health and participant queries, submission of pre-encrypted signed envelopes, and ledger-event submission/query. Except for the minimal health endpoint, routes require a bearer token when one is configured. Binding outside loopback requires both a bearer token of at least 32 bytes and TLS; the executable reads the certificate and key from `TLS_CERT_PATH` and `TLS_KEY_PATH`. Browser origins are denied unless explicitly allowlisted in the runtime configuration. JSON request bodies are size-limited (1 MiB by default), and API responses are not cacheable. Participants, envelopes, event IDs, and ledger records are held in process memory; a restart loses this state. There is no distributed peer discovery, relay fabric, validator consensus, durable storage, or webhook delivery.
+The current runtime is a single Node.js process, bound to loopback by default (port 3000). Its HTTP API supports public-key-only participant registration, health and participant queries, submission of pre-encrypted signed envelopes, the legacy bilateral proposal routes, and a native TEA event lifecycle through `POST /tea/events`, `GET /tea/events`, and `GET /tea/transactions/{id}`. TEA events support a signed `SUBMITTED` event followed by a counterparty `ACCEPTED` or `DISPUTED` event. Except for the minimal health endpoint, routes require a bearer token when one is configured. Binding outside loopback requires both a bearer token of at least 32 bytes and TLS; the executable reads the certificate and key from `TLS_CERT_PATH` and `TLS_KEY_PATH`. Browser origins are denied unless explicitly allowlisted in the runtime configuration. JSON request bodies are size-limited (1 MiB by default), and API responses are not cacheable. Participants, envelopes, event IDs, and ledger records are held in process memory; a restart loses this state. There is no distributed peer discovery, relay fabric, validator consensus, durable storage, or webhook delivery.
 
-The HTTP sandbox is for controlled integration testing only, not a trusted production service. Its public registration route rejects private-key fields; the envelope route accepts ciphertext already produced and signed by the participant, verifies the sender signature and ciphertext hash, and returns only the envelope. Keep key generation, signing, and encryption in participant-controlled gateways. The in-process helper APIs are intended for local tests and must not be used to load company private keys into a shared hosted process. Production still requires durable storage, business identity proofing and key lifecycle, scoped participant authorization, rate limiting, monitoring, and independent security review.
+The HTTP sandbox is for controlled integration testing only, not a trusted production service. Its public registration route rejects private-key fields; the envelope route accepts ciphertext already produced and signed by the participant, verifies the sender signature and ciphertext hash, and returns only the envelope. Semantic accounting transactions now produce balanced seller and buyer posting sets for INR invoices and credit notes. Zoho decimal amounts are converted to INR paise, and tax totals must reconcile to explicitly classified GST components; unsupported currencies and ambiguous tax breakdowns are rejected. This protocol issues no native currency and uses no external blockchain. A shared TEA event contains a salted commitment, not the postings themselves. The recipient must decrypt the source document, derive the same transaction, verify the commitment, and only then sign acceptance. The ledger enforces signatures and lifecycle transitions; it cannot determine whether the original invoice or accounting interpretation is truthful. Keep key generation, signing, and encryption in participant-controlled gateways. The in-process helper APIs are intended for local tests and must not be used to load company private keys into a shared hosted process. Production still requires durable storage, business identity proofing and key lifecycle, scoped participant authorization, rate limiting, monitoring, and independent security review.
 
 ## 5. Node classes
 
@@ -101,7 +101,7 @@ Each event is bound to a canonical document revision and carries or commits to t
 - seller and buyer identities, possibly represented by authorized identifiers or commitments in privacy-sensitive views;
 - debit/credit legs and tax components protected according to the chosen visibility model;
 - event time, protocol version, predecessor reference;
-- required counterparty signatures;
+- submitter signature followed by the counterparty signature required for confirmation;
 - optional consent, disclosure, dispute, reversal, or proof references.
 
 Both parties derive their books from the same accepted event. Non-financial events (order, dispatch, goods receipt) may produce commitment/accounting entries without profit-and-loss effects.
@@ -109,10 +109,10 @@ Both parties derive their books from the same accepted event. Non-financial even
 ### 6.2 Lifecycle
 
 1. Sender creates and validates a canonical document locally against its profile.
-2. Sender commits to the revision, signs the document/envelope, encrypts the payload to the recipient, and submits the event.
+2. Sender commits to the revision, signs the document/envelope, encrypts the payload to the recipient, and appends a provisional submission event.
 3. Relays route and optionally replicate ciphertext; they cannot decrypt it by default.
 4. Validators check protocol rules, sender authorization, signatures or proofs, uniqueness/idempotency, and allowed state transitions within their permitted view.
-5. Recipient decrypts and validates, then accepts, rejects, or disputes. Acceptance produces a countersignature.
+5. Recipient decrypts and validates, verifies the transaction commitment, then accepts or disputes. Acceptance produces a signed counterparty event; the sender cannot confirm its own submission.
 6. The event reaches defined ledger finality. Both parties verify the event and derive their books.
 7. Corrections append new events. Disputes affect derived status without editing the original event.
 
@@ -201,14 +201,14 @@ For production, keep ERP adapters and AI gateways in the participant's controlle
 ## 12. Initial component boundaries
 
 ```text
-canonical/       implemented: canonical JSON, trade-document schema, validation
+canonical/       implemented: canonical JSON, trade-document schema, validation; semantic TEA posting model in progress
 crypto/          implemented POC: signing, verification, envelope encryption; production key custody pending
 identity/        pending: business credentials, public-key discovery, delegation, revocation
-ledger/          implemented POC: accounting event, bilateral proposal, signatures, in-memory append-only chain
-network/         implemented POC: single-process HTTP sandbox; peer discovery, relay, sync, and consensus pending
+ledger/          implemented POC: bilateral proposals plus signed provisional/accept/dispute TEA events in an in-memory append-only log
+network/         implemented POC: single-process HTTP sandbox with TEA event/status routes; peer discovery, relay, persistence, and consensus pending
 storage/         pending: durable encrypted payloads, replication, retention, backup/recovery
 consent/         pending: scoped grants, disclosure packaging, verifier/audit interface
-connectors/      implemented prototype: Zoho Books adapter; other ERP and external-rail codecs pending
+connectors/      implemented prototype: Zoho Books invoice mapping to balanced postings and provisional TEA submission; live OAuth and other codecs pending
 agent-gateway/   implemented foundation: signed intents and local policy checks; transport/event delivery pending
 node-runtime/    pending: node capabilities, production configuration, monitoring, safe upgrades
 ```
@@ -225,7 +225,7 @@ Deliver actor/data-flow diagrams, privacy/metadata matrix, node capability model
 
 Deliver canonical document, local keys, signed/encrypted message, untrusted relay, recipient verification, idempotent retries, encrypted local storage. Exit when a relay cannot read or silently alter a message and both parties independently verify the same revision.
 
-### Phase 2: distributed triple-entry ledger (single-process prototype implemented; distributed operation pending)
+### Phase 2: distributed triple-entry ledger (semantic event lifecycle prototype implemented; persistence and distributed operation pending)
 
 Deliver event schema/accounting rules, multi-operator validator prototype, countersignature flow, append-only corrections/disputes, replicated verification, finality and recovery tests. Exit when independent nodes converge and reject tampered, replayed, unauthorized, or conflicting events under documented fault assumptions.
 
@@ -267,7 +267,7 @@ Deliver independent security/cryptographic review, penetration test, backup/rest
 3. Which fields are visible to counterparties, validators, other participants, and third-party verifiers?
 4. Is GSTIN visible on-ledger, pseudonymous, or selectively disclosed?
 5. What key recovery model is acceptable, and which parties are trusted in recovery?
-6. Does every event require both parties to countersign, or do some event kinds allow unilateral/provisional states?
+6. Which event kinds may be provisionally submitted by one party, and which require counterparty acceptance before confirmation?
 7. What retention, deletion, backup, and legal-hold obligations apply to payloads and ledger evidence?
 8. What is the first third-party verification use case and exact claim to prove?
 9. What measurable requirement justifies ZK or an external chain over signatures and commitments?
@@ -277,6 +277,6 @@ Deliver independent security/cryptographic review, penetration test, backup/rest
 
 Build the exchange and triple-entry ledger as one protocol with separate privacy boundaries: signed accounting events and commitments form shared history; encrypted documents are delivered/replicated for authorized participants; scoped grants let third parties verify selected claims. Begin with signatures, encryption, and commitments. Introduce ZK proofs or external-chain anchors only when a concrete workflow demonstrates value. Choose consensus and node governance before selecting a blockchain product.
 
-The current POC demonstrates canonical document validation, signatures and encrypted envelopes, bilateral ledger-proposal verification, an in-memory hosted HTTP sandbox, a Zoho invoice-sync path exercised with a fake provider, and local signed-intent policy checks for a company-owned AI gateway. It does not yet demonstrate independently operated nodes, a blind untrusted relay, distributed consensus/finality, scoped third-party verifier grants, production Zoho OAuth, or transport between company gateways.
+The current POC demonstrates canonical document validation, signatures and encrypted envelopes, legacy bilateral ledger-proposal verification, balanced semantic posting sets for INR invoices/credit notes, and a signed provisional-to-confirmed/disputed TEA lifecycle in an in-memory HTTP sandbox. The Zoho flow submits a seller-signed provisional event, and the buyer can verify the salted commitment and countersign; the provider test uses a fake Zoho HTTP service. It does not yet demonstrate durable storage, independently operated nodes, a blind untrusted relay, distributed consensus/finality, scoped third-party verifier grants, production Zoho OAuth, or transport between company gateways.
 
-The next architecture steps are to define production business identity and scoped authorization, separate the relay from participant-controlled signing/encryption, add durable storage and asynchronous delivery, and specify cross-company intent trust/replay semantics. The HTTP API now accepts public identities and pre-encrypted envelopes, but the sandbox remains an in-memory prototype; use it only behind controlled access and TLS. Production deployment still requires governance, operational, legal, and independent security review.
+The next architecture steps are to persist the event log, add idempotent ERP retries and buyer-side reconciliation, define production business identity and scoped authorization, separate the relay from participant-controlled signing/encryption, and specify cross-company intent trust/replay semantics. The HTTP API now accepts public identities and pre-encrypted envelopes, but the sandbox remains an in-memory prototype; use it only behind controlled access and TLS. Production deployment still requires governance, operational, legal, and independent security review.

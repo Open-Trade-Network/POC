@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { deriveSemanticAccountingTransaction } from "../src/core/accounting.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createParticipantKeys } from "../src/core/crypto.js";
+import { signTripleEntryEvent, verifySaltedCommitment } from "../src/core/ledger.js";
 import { HostedTradeNetwork } from "../src/network.js";
-import { ZohoBooksTradeAdapter } from "../src/erp/zoho-invoice-sync.js";
+import { mapZohoInvoiceToTradeDocument, ZohoBooksTradeAdapter } from "../src/erp/zoho-invoice-sync.js";
 
 interface FakeZohoState {
   lastStatus: Record<string, unknown> | null;
@@ -27,8 +29,12 @@ describe("zoho books ERP integration", () => {
           customer_name: "Example Buyer",
           date: "2026-09-30",
           currency_code: "INR",
-          total: 11800,
-          tax_total: 1800,
+          total: "118.00",
+          tax_total: "18.00",
+          taxes: [
+            { tax_name: "CGST", tax_amount: "9.00" },
+            { tax_name: "SGST", tax_amount: "9.00" },
+          ],
         }));
         return;
       }
@@ -66,13 +72,53 @@ describe("zoho books ERP integration", () => {
     });
   });
 
+  it("rejects invoice tax totals without a classifiable tax breakdown", () => {
+    expect(() => mapZohoInvoiceToTradeDocument({
+      invoice_id: "INV-AMBIGUOUS-TAX",
+      invoice_number: "INV-AMBIGUOUS-TAX",
+      currency_code: "INR",
+      total: "118.00",
+      tax_total: "18.00",
+    }, {
+      sellerParticipantId: "seller",
+      buyerParticipantId: "buyer",
+    })).toThrow("Zoho tax components must be classified");
+  });
+
+  it("rejects unsupported currencies and missing source dates", () => {
+    const invoice = {
+      invoice_id: "INV-VALIDATION",
+      invoice_number: "INV-VALIDATION",
+      total: "118.00",
+      tax_total: "0.00",
+    };
+    const parties = { sellerParticipantId: "seller", buyerParticipantId: "buyer" };
+    expect(() => mapZohoInvoiceToTradeDocument({
+      ...invoice,
+      currency_code: "USD",
+      date: "2026-09-30",
+    }, parties)).toThrow("Only INR");
+    expect(() => mapZohoInvoiceToTradeDocument({
+      ...invoice,
+      currency_code: "INR",
+    }, parties)).toThrow("Invoice issue date is required");
+  });
+
   it("imports a zoho invoice, submits it through the network, and updates the ERP status", async () => {
     const seller = await createParticipantKeys("seller-zoho");
     const buyer = await createParticipantKeys("buyer-zoho");
-    network.registerParticipant(seller);
-    network.registerParticipant(buyer);
+    network.registerParticipantIdentity({
+      participantId: seller.participantId,
+      signingPublicKey: seller.signingPublicKey,
+      encryptionPublicKey: seller.encryptionPublicKey,
+    });
+    network.registerParticipantIdentity({
+      participantId: buyer.participantId,
+      signingPublicKey: buyer.signingPublicKey,
+      encryptionPublicKey: buyer.encryptionPublicKey,
+    });
 
-    const adapter = new ZohoBooksTradeAdapter({ baseUrl }, network);
+    const adapter = new ZohoBooksTradeAdapter({ baseUrl }, network, seller);
     const result = await adapter.syncInvoice("INV-1001", {
       sellerParticipantId: seller.participantId,
       buyerParticipantId: buyer.participantId,
@@ -81,12 +127,45 @@ describe("zoho books ERP integration", () => {
     expect(result.document.kind).toBe("INVOICE");
     expect(result.document.documentNumber).toBe("INV-1001");
     expect(result.document.totalMinor).toBe(11800);
-    expect(result.ledgerRecord.sequence).toBe(0);
-    expect(result.ledgerRecord.parties).toEqual(["buyer-zoho", "seller-zoho"]);
+    expect(result.status).toBe("PROVISIONAL");
+    expect(result.teaEventRecord.kind).toBe("SUBMITTED");
+    expect(network.getTripleEntryTransactionStatus(result.accountingTransaction.transactionId)).toBe("PROVISIONAL");
     expect(state.lastStatus).toMatchObject({
-      status: "accepted",
+      status: "pending_counterparty",
+      metadata: { status: "PROVISIONAL" },
+    });
+
+    const buyerTransaction = deriveSemanticAccountingTransaction(
+      result.document,
+      result.accountingTransaction.transactionId,
+    );
+    expect(result.teaEventRecord.commitmentSalt).toBeDefined();
+    expect(verifySaltedCommitment(
+      buyerTransaction,
+      result.teaEventRecord.commitment,
+      result.teaEventRecord.commitmentSalt!,
+    )).toBe(true);
+
+    const acceptedEvent = await signTripleEntryEvent({
+      version: 1,
+      sequence: 1,
+      eventId: "buyer-accepts-zoho-invoice",
+      transactionId: result.teaEventRecord.transactionId,
+      commitment: result.teaEventRecord.commitment,
+      previousHash: result.teaEventRecord.eventHash,
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+      kind: "ACCEPTED",
+      actorParticipantId: buyer.participantId,
+      occurredAt: new Date().toISOString(),
+    }, buyer);
+    await network.submitTripleEntryEvent(acceptedEvent);
+    expect(network.getTripleEntryTransactionStatus(result.accountingTransaction.transactionId)).toBe("CONFIRMED");
+
+    expect(state.lastStatus).toMatchObject({
+      status: "pending_counterparty",
       metadata: {
-        documentId: result.document.documentId,
+        transactionId: result.accountingTransaction.transactionId,
       },
     });
   });

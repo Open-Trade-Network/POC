@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { deriveAccountingEvent } from "../src/core/accounting.js";
+import { deriveAccountingEvent, deriveSemanticAccountingTransaction, SemanticAccountingTransactionSchema } from "../src/core/accounting.js";
 import { canonicalJson } from "../src/core/canonical.js";
 import { createEnvelope, createParticipantKeys, openEnvelope, verifyEnvelope } from "../src/core/crypto.js";
-import { createLedgerProposal, createSaltedCommitment, InMemoryAppendOnlyLedger } from "../src/core/ledger.js";
+import { createLedgerProposal, createSaltedCommitment, InMemoryAppendOnlyLedger, InMemoryTripleEntryLedger, signTripleEntryEvent } from "../src/core/ledger.js";
 import { TradeDocumentSchema, type TradeDocument } from "../src/core/schema.js";
 import { HostedTradeNetwork } from "../src/network.js";
 
@@ -116,6 +116,206 @@ describe("bilateral append-only ledger prototype", () => {
 
     const exposedCopy = ledger.getRecords();
     exposedCopy[0]!.commitment = "tampered";
+    expect(await ledger.verify()).toBe(true);
+  });
+});
+
+describe("native triple-entry transaction model", () => {
+  it("derives balanced seller and buyer posting sets from an invoice", () => {
+    const transaction = deriveSemanticAccountingTransaction(sampleInvoice(), "tea:invoice-001:0");
+
+    expect(transaction.amountMinor).toBe(11800);
+    expect(transaction.taxMinor).toBe(1800);
+    expect(transaction.postingSets.map((set) => set.participantId)).toEqual(["seller-test", "buyer-test"]);
+    for (const postingSet of transaction.postingSets) {
+      const debits = postingSet.postings
+        .filter((posting) => posting.side === "DEBIT")
+        .reduce((total, posting) => total + posting.amountMinor, 0);
+      const credits = postingSet.postings
+        .filter((posting) => posting.side === "CREDIT")
+        .reduce((total, posting) => total + posting.amountMinor, 0);
+      expect(debits).toBe(11800);
+      expect(credits).toBe(11800);
+    }
+
+    expect(() => SemanticAccountingTransactionSchema.parse({
+      ...transaction,
+      postingSets: [
+        transaction.postingSets[0],
+        { ...transaction.postingSets[1], postings: transaction.postingSets[1].postings.slice(1) },
+      ],
+    })).toThrow();
+
+    const creditNote = deriveSemanticAccountingTransaction(
+      { ...sampleInvoice(), kind: "CREDIT_NOTE" },
+      "tea:credit-note-001:0",
+    );
+    expect(creditNote.postingSets[0].postings.some((posting) => posting.accountCode === "contra_income.sales_returns"))
+      .toBe(true);
+  });
+
+  it("moves a signed transaction from provisional to confirmed only on counterparty acceptance", async () => {
+    const seller = await createParticipantKeys("seller-tea");
+    const buyer = await createParticipantKeys("buyer-tea");
+    const ledger = new InMemoryTripleEntryLedger(new Map([
+      [seller.participantId, seller.signingPublicKey],
+      [buyer.participantId, buyer.signingPublicKey],
+    ]));
+    const transactionId = "tea:invoice-001:0";
+    const commitment = createSaltedCommitment(deriveSemanticAccountingTransaction(sampleInvoice(), transactionId));
+    const submitted = await signTripleEntryEvent({
+      version: 1,
+      sequence: 0,
+      eventId: "tea-event-001",
+      transactionId,
+      commitment: commitment.digest,
+      commitmentSalt: commitment.salt,
+      previousHash: "",
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+      kind: "SUBMITTED",
+      actorParticipantId: seller.participantId,
+      occurredAt: new Date().toISOString(),
+    }, seller);
+
+    const submittedRecord = await ledger.append(submitted);
+    expect(ledger.getTransactionStatus(transactionId)).toBe("PROVISIONAL");
+
+    const accepted = await signTripleEntryEvent({
+      version: 1,
+      sequence: 1,
+      eventId: "tea-event-002",
+      transactionId,
+      commitment: commitment.digest,
+      previousHash: submittedRecord.eventHash,
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+      kind: "ACCEPTED",
+      actorParticipantId: buyer.participantId,
+      occurredAt: new Date().toISOString(),
+    }, buyer);
+
+    await ledger.append(accepted);
+    expect(ledger.getTransactionStatus(transactionId)).toBe("CONFIRMED");
+    expect(await ledger.verify()).toBe(true);
+  });
+
+  it("rejects a submitter attempting to accept its own provisional transaction", async () => {
+    const seller = await createParticipantKeys("seller-tea-policy");
+    const buyer = await createParticipantKeys("buyer-tea-policy");
+    const ledger = new InMemoryTripleEntryLedger(new Map([
+      [seller.participantId, seller.signingPublicKey],
+      [buyer.participantId, buyer.signingPublicKey],
+    ]));
+    const commitment = createSaltedCommitment({ transactionId: "tea:invoice-002:0" });
+    const parties = {
+      transactionId: "tea:invoice-002:0",
+      commitment: commitment.digest,
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+    };
+    const submitted = await signTripleEntryEvent({
+      version: 1,
+      sequence: 0,
+      eventId: "tea-policy-event-001",
+      ...parties,
+      commitmentSalt: commitment.salt,
+      previousHash: "",
+      kind: "SUBMITTED",
+      actorParticipantId: seller.participantId,
+      occurredAt: new Date().toISOString(),
+    }, seller);
+    await ledger.append(submitted);
+
+    const selfAccepted = await signTripleEntryEvent({
+      version: 1,
+      sequence: 1,
+      eventId: "tea-policy-event-002",
+      ...parties,
+      previousHash: ledger.getRecords()[0]!.eventHash,
+      kind: "ACCEPTED",
+      actorParticipantId: seller.participantId,
+      occurredAt: new Date().toISOString(),
+    }, seller);
+
+    await expect(ledger.append(selfAccepted)).rejects.toThrow("Only the counterparty");
+    expect(ledger.getTransactionStatus(parties.transactionId)).toBe("PROVISIONAL");
+  });
+
+  it("records a counterparty dispute without rewriting the submission", async () => {
+    const seller = await createParticipantKeys("seller-tea-dispute");
+    const buyer = await createParticipantKeys("buyer-tea-dispute");
+    const ledger = new InMemoryTripleEntryLedger(new Map([
+      [seller.participantId, seller.signingPublicKey],
+      [buyer.participantId, buyer.signingPublicKey],
+    ]));
+    const commitment = createSaltedCommitment({ transactionId: "tea:disputed:001" });
+    const transaction = {
+      transactionId: "tea:disputed:001",
+      commitment: commitment.digest,
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+    };
+    const submitted = await signTripleEntryEvent({
+      version: 1,
+      sequence: 0,
+      eventId: "tea-dispute-submitted",
+      ...transaction,
+      commitmentSalt: commitment.salt,
+      previousHash: "",
+      kind: "SUBMITTED",
+      actorParticipantId: seller.participantId,
+      occurredAt: new Date().toISOString(),
+    }, seller);
+    const originalRecord = await ledger.append(submitted);
+    const disputed = await signTripleEntryEvent({
+      version: 1,
+      sequence: 1,
+      eventId: "tea-dispute-raised",
+      ...transaction,
+      previousHash: originalRecord.eventHash,
+      kind: "DISPUTED",
+      actorParticipantId: buyer.participantId,
+      occurredAt: new Date().toISOString(),
+    }, buyer);
+
+    await ledger.append(disputed);
+    expect(ledger.getTransactionStatus(transaction.transactionId)).toBe("DISPUTED");
+    expect(ledger.getRecords()[0]).toMatchObject({ kind: "SUBMITTED", eventHash: originalRecord.eventHash });
+    expect(await ledger.verify()).toBe(true);
+  });
+
+  it("serializes concurrent events submitted against the same chain head", async () => {
+    const seller = await createParticipantKeys("seller-tea-concurrent");
+    const buyer = await createParticipantKeys("buyer-tea-concurrent");
+    const ledger = new InMemoryTripleEntryLedger(new Map([
+      [seller.participantId, seller.signingPublicKey],
+      [buyer.participantId, buyer.signingPublicKey],
+    ]));
+    const commitment = createSaltedCommitment({ invoice: "concurrent" });
+    const createSubmission = (eventId: string, transactionId: string) => signTripleEntryEvent({
+      version: 1,
+      sequence: 0,
+      eventId,
+      transactionId,
+      commitment: commitment.digest,
+      commitmentSalt: commitment.salt,
+      previousHash: "",
+      sellerParticipantId: seller.participantId,
+      buyerParticipantId: buyer.participantId,
+      kind: "SUBMITTED",
+      actorParticipantId: seller.participantId,
+      occurredAt: new Date().toISOString(),
+    }, seller);
+    const [first, second] = await Promise.all([
+      createSubmission("tea-concurrent-001", "tea:concurrent:001"),
+      createSubmission("tea-concurrent-002", "tea:concurrent:002"),
+    ]);
+
+    const results = await Promise.allSettled([ledger.append(first), ledger.append(second)]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(ledger.getRecords()).toHaveLength(1);
     expect(await ledger.verify()).toBe(true);
   });
 });
@@ -242,6 +442,92 @@ describe("sandbox network hosting", () => {
         body: JSON.stringify({ participantId: "x".repeat(2000) }),
       });
       expect(oversizedResponse.status).toBe(413);
+    } finally {
+      await network.stop();
+    }
+  });
+
+  it("exposes provisional submission and counterparty confirmation over HTTP", async () => {
+    const network = new HostedTradeNetwork({ host: "127.0.0.1", port: 0 });
+    await network.start();
+
+    try {
+      const seller = await createParticipantKeys("seller-tea-http");
+      const buyer = await createParticipantKeys("buyer-tea-http");
+      for (const participant of [seller, buyer]) {
+        const response = await fetch(`http://127.0.0.1:${network.port}/participants`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            participantId: participant.participantId,
+            signingPublicKey: participant.signingPublicKey,
+            encryptionPublicKey: participant.encryptionPublicKey,
+          }),
+        });
+        expect(response.status).toBe(201);
+      }
+
+      const document = TradeDocumentSchema.parse({
+        ...sampleInvoice(),
+        sellerParticipantId: seller.participantId,
+        buyerParticipantId: buyer.participantId,
+      });
+      const transactionId = `${document.documentId}:${document.revision}`;
+      const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
+      const commitment = createSaltedCommitment(accountingTransaction);
+      const submitted = await signTripleEntryEvent({
+        version: 1,
+        sequence: 0,
+        eventId: "tea-http-submitted",
+        transactionId,
+        commitment: commitment.digest,
+        commitmentSalt: commitment.salt,
+        previousHash: "",
+        sellerParticipantId: seller.participantId,
+        buyerParticipantId: buyer.participantId,
+        kind: "SUBMITTED",
+        actorParticipantId: seller.participantId,
+        occurredAt: new Date().toISOString(),
+      }, seller);
+      const submissionResponse = await fetch(`http://127.0.0.1:${network.port}/tea/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event: submitted }),
+      });
+      expect(submissionResponse.status).toBe(201);
+      const submissionBody = await submissionResponse.json();
+      const submittedRecord = submissionBody.record;
+
+      const provisionalResponse = await fetch(
+        `http://127.0.0.1:${network.port}/tea/transactions/${encodeURIComponent(transactionId)}`,
+      );
+      await expect(provisionalResponse.json()).resolves.toMatchObject({ status: "PROVISIONAL" });
+
+      const accepted = await signTripleEntryEvent({
+        version: 1,
+        sequence: 1,
+        eventId: "tea-http-accepted",
+        transactionId,
+        commitment: commitment.digest,
+        previousHash: submittedRecord.eventHash,
+        sellerParticipantId: seller.participantId,
+        buyerParticipantId: buyer.participantId,
+        kind: "ACCEPTED",
+        actorParticipantId: buyer.participantId,
+        occurredAt: new Date().toISOString(),
+      }, buyer);
+      const acceptanceResponse = await fetch(`http://127.0.0.1:${network.port}/tea/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event: accepted }),
+      });
+      expect(acceptanceResponse.status).toBe(201);
+
+      const confirmedResponse = await fetch(
+        `http://127.0.0.1:${network.port}/tea/transactions/${encodeURIComponent(transactionId)}`,
+      );
+      await expect(confirmedResponse.json()).resolves.toMatchObject({ status: "CONFIRMED" });
+      expect(network.getTripleEntryEvents()).toHaveLength(2);
     } finally {
       await network.stop();
     }

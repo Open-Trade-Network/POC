@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { deriveAccountingEvent } from "../core/accounting.js";
-import { createLedgerProposal, createSaltedCommitment } from "../core/ledger.js";
-import { type ParticipantKeyMaterial } from "../core/crypto.js";
+import { createHash, randomUUID } from "node:crypto";
+import { deriveSemanticAccountingTransaction } from "../core/accounting.js";
+import { createEnvelope, type ParticipantKeyMaterial } from "../core/crypto.js";
+import { createSaltedCommitment, signTripleEntryEvent } from "../core/ledger.js";
 import { TradeDocumentSchema, type TradeDocument } from "../core/schema.js";
 import type { HostedTradeNetwork } from "../network.js";
 import { ZohoBooksClient } from "./zoho.js";
@@ -27,26 +27,63 @@ function uuidv5(name: string): string {
 
 function toIsoDate(value?: string): string {
   if (!value) {
-    return new Date().toISOString();
+    throw new Error("Invoice issue date is required");
   }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return new Date().toISOString();
+    throw new Error("Invoice issue date is invalid");
   }
   return parsed.toISOString();
+}
+
+function toMinorUnits(value: number | string | undefined, label: string): number {
+  if (value === undefined) throw new Error(`${label} is required`);
+  const text = typeof value === "number" ? String(value) : value.trim();
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(text);
+  if (!match) throw new Error(`${label} must be a non-negative INR amount with at most two decimal places`);
+  const minorUnits = BigInt(match[1]!) * 100n + BigInt((match[2] ?? "").padEnd(2, "0") || "0");
+  if (minorUnits > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${label} exceeds the supported range`);
+  return Number(minorUnits);
+}
+
+function mapZohoTax(invoice: ZohoInvoicePayload): {
+  cgstMinor: number;
+  sgstMinor: number;
+  igstMinor: number;
+  cessMinor: number;
+  totalMinor: number;
+} {
+  const totalMinor = toMinorUnits(invoice.tax_total ?? 0, "Invoice tax total");
+  const components = { cgstMinor: 0, sgstMinor: 0, igstMinor: 0, cessMinor: 0, totalMinor };
+
+  for (const tax of invoice.taxes ?? []) {
+    const amountMinor = toMinorUnits(tax.tax_amount, "Tax component amount");
+    const taxName = tax.tax_name?.toUpperCase() ?? "";
+    if (taxName.includes("CGST")) components.cgstMinor += amountMinor;
+    else if (taxName.includes("SGST")) components.sgstMinor += amountMinor;
+    else if (taxName.includes("IGST")) components.igstMinor += amountMinor;
+    else if (taxName.includes("CESS")) components.cessMinor += amountMinor;
+    else if (amountMinor > 0) throw new Error(`Unsupported or ambiguous Zoho tax component: ${tax.tax_name ?? "unnamed"}`);
+  }
+
+  const componentTotal = components.cgstMinor + components.sgstMinor + components.igstMinor + components.cessMinor;
+  if (!Number.isSafeInteger(componentTotal) || componentTotal !== totalMinor) {
+    throw new Error("Zoho tax components must be classified and add up to the invoice tax total");
+  }
+  return components;
 }
 
 export function mapZohoInvoiceToTradeDocument(
   invoice: ZohoInvoicePayload,
   options: SyncInvoiceOptions,
 ): TradeDocument {
-  const invoiceId = invoice.invoice_id ?? invoice.invoice_number ?? `erp-${Date.now()}`;
-  const totalMinor = Number(invoice.total ?? 0);
-  const taxTotalMinor = Number(invoice.tax_total ?? 0);
-
-  const normalizedTaxTotal = taxTotalMinor || 0;
-  const cgstMinor = normalizedTaxTotal > 0 ? Math.round(normalizedTaxTotal / 2) : 0;
-  const sgstMinor = normalizedTaxTotal > 0 ? normalizedTaxTotal - cgstMinor : 0;
+  const invoiceId = invoice.invoice_id ?? invoice.invoice_number;
+  if (!invoiceId) throw new Error("Zoho invoice ID or invoice number is required");
+  const totalMinor = toMinorUnits(invoice.total, "Invoice total");
+  const tax = mapZohoTax(invoice);
+  if (invoice.currency_code?.toUpperCase() !== "INR") {
+    throw new Error("Only INR Zoho invoices are supported by this pilot");
+  }
 
   return TradeDocumentSchema.parse({
     version: 1,
@@ -57,15 +94,9 @@ export function mapZohoInvoiceToTradeDocument(
     sellerParticipantId: options.sellerParticipantId,
     buyerParticipantId: options.buyerParticipantId,
     issuedAt: toIsoDate(invoice.date),
-    currency: (invoice.currency_code ?? "INR").toUpperCase() === "INR" ? "INR" : "INR",
+    currency: "INR",
     totalMinor,
-    tax: {
-      cgstMinor,
-      sgstMinor,
-      igstMinor: 0,
-      cessMinor: 0,
-      totalMinor: normalizedTaxTotal,
-    },
+    tax,
   });
 }
 
@@ -75,6 +106,7 @@ export class ZohoBooksTradeAdapter {
   constructor(
     private readonly config: ZohoBooksConfig,
     private readonly network: HostedTradeNetwork,
+    private readonly sellerKeyMaterial: ParticipantKeyMaterial,
   ) {
     this.client = new ZohoBooksClient(config);
   }
@@ -83,36 +115,52 @@ export class ZohoBooksTradeAdapter {
     const invoice = await this.client.getInvoice(invoiceId);
     const document = mapZohoInvoiceToTradeDocument(invoice, options);
 
-    const seller = this.network.getParticipant(options.sellerParticipantId);
-    const buyer = this.network.getParticipant(options.buyerParticipantId);
+    const seller = this.network.getParticipantIdentity(options.sellerParticipantId);
+    const buyer = this.network.getParticipantIdentity(options.buyerParticipantId);
     if (!seller || !buyer) {
       throw new Error("Both seller and buyer participants must already be registered with the network");
     }
+    if (this.sellerKeyMaterial.participantId !== seller.participantId
+      || this.sellerKeyMaterial.signingPublicKey !== seller.signingPublicKey
+      || this.sellerKeyMaterial.encryptionPublicKey !== seller.encryptionPublicKey) {
+      throw new Error("Seller key material does not match the registered seller identity");
+    }
 
-    const envelope = await this.network.createEnvelopeForDocument(
+    const envelope = await createEnvelope(
       document,
-      options.sellerParticipantId,
+      this.sellerKeyMaterial,
       options.buyerParticipantId,
+      buyer.encryptionPublicKey,
     );
+    await this.network.submitEnvelope(envelope);
 
-    const eventId = `erp:${document.documentId}`;
-    const privateEvent = deriveAccountingEvent(document, eventId);
-    const proposal = await createLedgerProposal({
-      sequence: this.network.getLedgerRecords().length,
-      eventId,
-      commitment: createSaltedCommitment(privateEvent).digest,
-      previousHash: this.network.getLedgerRecords().at(-1)?.chainHash ?? "",
-      signers: [seller, buyer] as [ParticipantKeyMaterial, ParticipantKeyMaterial],
+    const transactionId = `zoho:${document.documentId}:${document.revision}`;
+    const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
+    const commitment = createSaltedCommitment(accountingTransaction);
+    const previousEvent = this.network.getTripleEntryEvents().at(-1);
+    const event = await signTripleEntryEvent({
+      version: 1,
+      sequence: this.network.getTripleEntryEvents().length,
+      eventId: randomUUID(),
+      transactionId,
+      commitment: commitment.digest,
+      commitmentSalt: commitment.salt,
+      previousHash: previousEvent?.eventHash ?? "",
+      sellerParticipantId: options.sellerParticipantId,
+      buyerParticipantId: options.buyerParticipantId,
+      kind: "SUBMITTED",
+      actorParticipantId: options.sellerParticipantId,
+      occurredAt: new Date().toISOString(),
+    }, this.sellerKeyMaterial);
+    const teaEventRecord = await this.network.submitTripleEntryEvent(event);
+
+    await this.client.updateInvoiceStatus(invoiceId, "pending_counterparty", {
+      transactionId,
+      teaEventId: teaEventRecord.eventId,
+      eventHash: teaEventRecord.eventHash,
+      status: "PROVISIONAL",
+      participantIds: [options.sellerParticipantId, options.buyerParticipantId],
     });
-
-    const ledgerRecord = await this.network.submitLedgerProposal(proposal);
-    await this.client.updateInvoiceStatus(invoiceId, "accepted", {
-      documentId: document.documentId,
-      ledgerEventId: ledgerRecord.eventId,
-      chainHash: ledgerRecord.chainHash,
-      participantIds: ledgerRecord.parties,
-    });
-
-    return { invoiceId, document, envelope, ledgerRecord };
+    return { invoiceId, document, envelope, accountingTransaction, teaEventRecord, status: "PROVISIONAL" };
   }
 }

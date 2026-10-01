@@ -65,7 +65,11 @@ This is the foundation for privacy-preserving counterpart communication.
 
 ### 3. Bilateral append-only ledger
 
-Each accepted event must be co-signed by both trusted counterparties. Event sequences are chained by previous-hash checks and verified before acceptance. The ledger prototype enforces append-only progression and rejects invalid or single-party proposals.
+The legacy ledger proposal path requires both trusted counterparties to sign. A separate native TEA lifecycle now supports a seller-signed submission followed by a counterparty acceptance or dispute. The submitted event is provisional; only the counterparty can transition it to confirmed. Events are hash chained and append-only. This remains an in-memory prototype, not a distributed consensus service.
+
+Semantic invoice and credit-note transactions derive balanced posting sets for each participant, including tax component postings. The full transaction is represented by a salted commitment in the shared event; the recipient can decrypt the source invoice, independently derive the same transaction, and verify that commitment before signing acceptance. The network verifies signatures and lifecycle transitions, not the economic truth of the source data or accounting interpretation.
+
+Amounts in this pilot are denominated in INR paise; the protocol does not issue a currency or settle payments. Zoho major-unit decimals are converted exactly to paise, and invoices with unsupported currencies or tax totals that cannot be reconciled to named GST components are rejected.
 
 ### 4. Hosted sandbox network
 
@@ -73,22 +77,24 @@ A single-process, in-memory HTTP sandbox is available for controlled integration
 
 - public-key-only participant registration and lookup
 - submission of participant-encrypted, signed envelopes
-- ledger event submission and lookup
+- legacy bilateral ledger proposal submission and lookup
+- TEA lifecycle event submission and lookup (`/tea/events`, `/tea/transactions/{id}`)
 - a minimal health check
 
 The server does not receive plaintext documents through the envelope endpoint. Participant gateways must encrypt and sign the envelope before submission. Request bodies are limited to 1 MiB by default, and responses are marked non-cacheable. When an API token is configured, every route except health requires its bearer token. Binding outside loopback requires both a bearer token of at least 32 bytes and TLS certificate/key files. Browser origins are not allowed by default. This sandbox is not production-ready: its state is lost on restart, and production identity governance, durable storage, rate limiting, and monitoring remain outstanding.
 
 ### 5. Zoho-first ERP integration
 
-The project now includes a Zoho Books-oriented ERP adapter flow for invoice integration:
+The Zoho Books-oriented adapter now:
 
-- receive an invoice payload from Zoho Books
-- map it to the canonical trade-document schema
-- create the encrypted network envelope
-- submit the corresponding ledger proposal
-- post the accepted status back into ERP metadata
+- fetches and maps an invoice to the canonical document and balanced semantic posting sets
+- creates and submits the encrypted envelope using the seller's locally supplied key material
+- submits a seller-signed provisional TEA event and updates ERP metadata to `pending_counterparty`
+- allows a buyer gateway to verify the salted commitment and append a signed acceptance or dispute
 
-This gives a practical first ERP path without hardcoding the network logic into vendor-specific APIs.
+The end-to-end flow is tested with a fake Zoho HTTP service. Live Zoho OAuth/API compatibility and updating the seller ERP after a later counterparty decision remain future work.
+
+An interactive, browser-only [Zoho acceptance/dispute workflow mock](docs/zoho-tea-review-mock.html) demonstrates the seller and buyer views. Its controls are simulated and do not call Zoho or the network.
 
 ### 6. Sovereign AI agent gateways
 
@@ -144,7 +150,7 @@ The current project has already completed the following milestones:
 
 1. **Protocol and threat model:** canonical schema, signatures, privacy boundaries, and validation logic.
 2. **Private exchange:** encrypted document flow and recipient verification.
-3. **Distributed ledger prototype:** append-only double-party signing and chain verification.
+3. **Native TEA lifecycle prototype:** balanced semantic postings, provisional submission, and signed counterparty decision in a single-process hash-chained log.
 4. **Sandbox hosting:** live network layer for external integration.
 5. **ERP integration:** Zoho-first invoice import and ledger update path.
 6. **Sovereign AI integration:** company-owned gateway and signed intent policy model.
