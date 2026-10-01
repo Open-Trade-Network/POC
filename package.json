@@ -8,19 +8,26 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p ui/tsconfig.json",
     "test": "vitest run",
-    "sandbox": "node dist/src/network.js"
+    "sandbox": "node dist/src/network.js",
+    "demo": "npm run build && npm run build:ui && node dist/src/demo/server.js"
   },
   "dependencies": {
     "canonicalize": "^2.1.0",
     "libsodium-wrappers": "^0.7.15",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/libsodium-wrappers": "^0.7.13",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "typescript": "^5.8.3",
+    "vite": "^7.3.6",
     "vitest": "^3.2.4"
   }
 }

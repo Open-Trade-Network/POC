@@ -138,6 +138,31 @@ Run the sandbox locally (loopback only by default):
 
 npm run sandbox
 
+## One-click MVP demo
+
+A browser demo drives one complete B2B trade transaction end-to-end through the
+live sandbox — Kerala Industrial Supplies Pvt Ltd (seller) sends invoice
+INV-2026-0001 (₹94,400) to Hyderabad Manufacturing Pvt Ltd (buyer):
+
+npm run demo
+
+Then open http://127.0.0.1:8080 and press **START DEMO**. The demo fetches the
+invoice from a mocked Zoho Books endpoint on the seller side, maps it to the
+canonical trade document, signs it (Ed25519), encrypts it to the buyer
+(X25519 sealed box), submits the envelope over HTTP to the real
+`HostedTradeNetwork`, appends a seller-signed provisional TEA event with a
+salted accounting commitment, then has the buyer pull, decrypt, verify,
+independently re-derive the posting sets, and sign acceptance — moving the
+transaction to CONFIRMED on the hash-chained ledger. Signed, policy-scoped AI
+gateway intents wrap both sides of the exchange. **RESET DEMO** rebuilds keys,
+network state and ledger for another run.
+
+No step is simulated: every hash, signature, ciphertext and ledger event shown
+in the UI is produced by the actual protocol code in `src/`. The UI is a small
+React/TypeScript app in `ui/` (built with `npm run build:ui`), served by the
+demo server in `src/demo/` alongside a server-sent event stream at
+`/api/demo/stream`.
+
 For a controlled remote sandbox, configure a long random API token and TLS certificate/key before binding beyond loopback:
 
 HOST=0.0.0.0 NETWORK_API_TOKEN='replace-with-a-random-token-at-least-32-bytes' TLS_CERT_PATH='/path/to/cert.pem' TLS_KEY_PATH='/path/to/key.pem' npm run sandbox

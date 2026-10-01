@@ -479,6 +479,18 @@ export class HostedTradeNetwork {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/documents/envelopes") {
+        const recipientId = url.searchParams.get("recipientId");
+        if (!recipientId) {
+          throw new HttpError(400, "recipientId query parameter is required");
+        }
+        const envelopes = this.envelopes
+          .filter((envelope) => envelope.header.recipientId === recipientId)
+          .map((envelope) => structuredClone(envelope));
+        this.sendJson(response, 200, { envelopes });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/ledger") {
         this.sendJson(response, 200, { records: this.getLedgerRecords() });
         return;
