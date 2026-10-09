@@ -16,6 +16,7 @@ import {
   verifyLedgerProposal,
 } from "./core/ledger.js";
 import { TradeDocumentSchema, type TradeDocument } from "./core/schema.js";
+import { toBecknNack, type OndcAction, type OndcWebhookController } from "./adapters/ondc/index.js";
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
@@ -89,6 +90,7 @@ export interface HostedTradeNetworkOptions {
     key: Buffer | string;
     cert: Buffer | string;
   };
+  ondcWebhook?: OndcWebhookController;
 }
 
 export interface PublicParticipantIdentity {
@@ -163,6 +165,7 @@ export class HostedTradeNetwork {
   private readonly allowedOrigins: Set<string>;
   private readonly maxRequestBodyBytes: number;
   private readonly tls: HostedTradeNetworkOptions["tls"];
+  private readonly ondcWebhook: OndcWebhookController | undefined;
 
   constructor(options: HostedTradeNetworkOptions = {}) {
     this.host = options.host ?? "127.0.0.1";
@@ -171,6 +174,7 @@ export class HostedTradeNetwork {
     this.allowedOrigins = new Set(options.allowedOrigins ?? []);
     this.maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
     this.tls = options.tls;
+    this.ondcWebhook = options.ondcWebhook;
     this.teaLedger = new InMemoryTripleEntryLedger(this.trustedSigningKeys);
     if (this.apiToken && Buffer.byteLength(this.apiToken) < 32) {
       throw new Error("API token must be at least 32 bytes");
@@ -428,6 +432,35 @@ export class HostedTradeNetwork {
 
       if (!this.isAuthorized(request)) {
         throw new HttpError(401, "Bearer authentication is required");
+      }
+
+      let ondcAction: OndcAction | undefined;
+      if (request.method === "POST" && url.pathname === "/ondc/confirm") {
+        ondcAction = "confirm";
+      } else if (request.method === "POST" && url.pathname === "/ondc/update") {
+        ondcAction = "update";
+      }
+      if (ondcAction) {
+        if (!this.ondcWebhook) {
+          this.sendJson(response, 503, {
+            message: { ack: { status: "NACK" } },
+            error: {
+              type: "APPLICATION-ERROR",
+              code: "50000",
+              message: "ONDC webhook processing is not configured",
+            },
+          });
+          return;
+        }
+        try {
+          const payload = await readRequestBody(request, this.maxRequestBodyBytes);
+          const ack = this.ondcWebhook.receive(ondcAction, payload);
+          this.sendJson(response, 200, ack);
+        } catch (error) {
+          const nack = toBecknNack(error);
+          this.sendJson(response, nack.statusCode, nack.body);
+        }
+        return;
       }
 
       if (request.method === "GET" && url.pathname === "/participants") {

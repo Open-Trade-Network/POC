@@ -78,6 +78,33 @@ The current runtime is a single Node.js process, bound to loopback by default (p
 
 The HTTP sandbox is for controlled integration testing only, not a trusted production service. Its public registration route rejects private-key fields; the envelope route accepts ciphertext already produced and signed by the participant, verifies the sender signature and ciphertext hash, and returns only the envelope. Semantic accounting transactions now produce balanced seller and buyer posting sets for INR invoices and credit notes. Zoho decimal amounts are converted to INR paise, and tax totals must reconcile to explicitly classified GST components; unsupported currencies and ambiguous tax breakdowns are rejected. This protocol issues no native currency and uses no external blockchain. A shared TEA event contains a salted commitment, not the postings themselves. The recipient must decrypt the source document, derive the same transaction, verify the commitment, and only then sign acceptance. The ledger enforces signatures and lifecycle transitions; it cannot determine whether the original invoice or accounting interpretation is truthful. Keep key generation, signing, and encryption in participant-controlled gateways. The in-process helper APIs are intended for local tests and must not be used to load company private keys into a shared hosted process. Production still requires durable storage, business identity proofing and key lifecycle, scoped participant authorization, rate limiting, monitoring, and independent security review.
 
+### Interoperability adapter architecture: ONDC and BharatTradeNet
+
+External network messages are translated at adapter boundaries; they do not become the canonical OTN model. Each adapter validates the external envelope, maps supported fields into a typed internal representation, and reports failures using the external network's response shape. Domain validation and authorization remain separate from syntactic parsing.
+
+```mermaid
+flowchart LR
+    ONDC[ONDC / Beckn callbacks] -->|confirm, update| O[ONDC adapter]
+    O -->|validate and map| PO[OTN purchase order / invoice]
+    O -->|synchronous ACK after acceptance| ONDC
+    PO --> Q[Async processing hook]
+    Q --> CORE[OTN workflow / ledger]
+    CORE --> BTN[BTN document projection]
+    BTN -->|canonical JSON + SHA-256| EVIDENCE[Document evidence]
+    EVIDENCE --> SIGNER[Class-3 DSC / HSM signer boundary]
+    SIGNER --> TITLE[Signed BTN / MLETR evidence]
+```
+
+**ONDC / Beckn boundary (implemented scaffold).** The hosted HTTP sandbox optionally exposes `POST /ondc/confirm` and `POST /ondc/update`. Requests are size-limited JSON and must have a configured webhook controller. The controller validates the Beckn action and the supported order envelope before returning `{ "message": { "ack": { "status": "ACK" } } }`; malformed requests receive a NACK-shaped response. A confirm order maps the `context.bap_id` to the OTN buyer, the order provider to the seller, and the quote/items to a typed OTN purchase order denominated in INR minor units. An update maps either an OTN purchase-order update or an existing validated OTN invoice. Accepted events are submitted to an in-process asynchronous processing hook after the response path; this is not a durable queue and ACK means accepted for local processing, not successful completion of the trade or settlement.
+
+The current adapter does not implement ONDC gateway/callback authentication, cryptographic request verification, transaction/message idempotency, profile/version negotiation, durable retries, dead-letter handling, or a production Beckn error-code registry. `context` and supported nested network objects retain unknown fields for forward compatibility, but only explicitly mapped fields enter the OTN document. Before a live connection, pin the applicable ONDC B2B domain/core versions, validate all required context and action-specific fields, verify callback authenticity, bind idempotency to network transaction/message identifiers, and run the network's conformance test suite.
+
+**BharatTradeNet / MLETR boundary (structural utilities implemented).** `src/adapters/bharattradenet/` validates a narrow document wrapper for invoices and delivery notes, canonicalizes it using the repository's RFC 8785 JSON canonicalizer, and calculates a SHA-256 digest. The signing utility passes the digest and document identifier to an injected Class-3 DSC signer and validates the returned signature metadata. Private-key operations are intentionally outside the adapter and belong in a participant-controlled approved HSM/DSC service.
+
+This is not yet a BTN connector or an implementation of legal title transfer. There is no BTN transport/API client, title-holder registry, transfer/endorsement lifecycle, certificate-chain or revocation validation, signer authorization policy, timestamp authority, or legal evidence-retention workflow. The current signer boundary reports a certificate fingerprint, algorithm, signature, and timestamp, but does not itself prove that the certificate is trusted, valid for the document action, or legally sufficient. A production BTN integration must bind the signed digest to a versioned BTN/MLETR profile, issuer and holder identities, document type and revision, and each transfer/endorsement event; verify the complete certificate/trust and revocation chain; and preserve verifiable evidence under an agreed retention policy.
+
+The adapters do not bypass the OTN privacy model: network-specific projections should disclose only fields required by the receiving protocol, keep credentials and signing keys outside shared network services, and avoid placing plaintext documents or sensitive trade fields in logs or public ledger events. Interoperability identifiers, replay protection, participant authorization, error translation, and audit trails must be explicitly specified for each live network.
+
 ## 5. Node classes
 
 Class describes role, service level, and resource profile. A separate capability and authorization model determines what a node may do.
@@ -205,10 +232,11 @@ canonical/       implemented: canonical JSON, trade-document schema, validation;
 crypto/          implemented POC: signing, verification, envelope encryption; production key custody pending
 identity/        pending: business credentials, public-key discovery, delegation, revocation
 ledger/          implemented POC: bilateral proposals plus signed provisional/accept/dispute TEA events in an in-memory append-only log
-network/         implemented POC: single-process HTTP sandbox with TEA event/status routes; peer discovery, relay, persistence, and consensus pending
+network/         implemented POC: single-process HTTP sandbox with TEA event/status and optional ONDC confirm/update routes; peer discovery, relay, persistence, and consensus pending
 storage/         pending: durable encrypted payloads, replication, retention, backup/recovery
 consent/         pending: scoped grants, disclosure packaging, verifier/audit interface
 connectors/      implemented prototype: Zoho Books invoice mapping to balanced postings and provisional TEA submission; live OAuth and other codecs pending
+adapters/        implemented scaffolds: typed ONDC/Beckn order and invoice mappings with async processing hook; BTN/MLETR canonical document hashing and injected DSC signer; live network authentication, persistence, registry/trust validation, and conformance pending
 agent-gateway/   implemented foundation: signed intents and local policy checks; transport/event delivery pending
 node-runtime/    pending: node capabilities, production configuration, monitoring, safe upgrades
 ```
@@ -245,6 +273,14 @@ Only proceed for a concrete use case. Deliver audited proof statements/circuits,
 
 Deliver independent security/cryptographic review, penetration test, backup/restore and key-compromise drills, incident response, load/finality tests, legal/compliance review, operator SLAs, support, and migration plans.
 
+### Phase 7: ONDC and BharatTradeNet interoperability pilot (scaffold implemented; network integration pending)
+
+For ONDC, pin the selected Beckn/ONDC B2B profiles; implement authenticated callback verification, schema/conformance fixtures, message idempotency, durable asynchronous work with retry/dead-letter handling, and a mapping for the agreed order and invoice lifecycle. Verify that the synchronous ACK/NACK behavior, timeouts, and downstream failure reporting match the live network contract.
+
+For BharatTradeNet, pin the BTN and MLETR data/legal profiles; implement the transport and title/document lifecycle, authoritative participant and title-holder identity checks, certificate-chain and revocation validation, and an approved HSM/DSC signer. Bind signatures to the canonical document revision and transfer event, preserve evidence, and obtain legal and operator review before representing a document as an electronic transferable record.
+
+For both integrations, establish data minimization and retention rules, correlation/audit identifiers, operational monitoring, protocol-version upgrade policy, and bilateral conformance tests. The milestone exits only when sandbox exchange succeeds with the selected counterpart profiles and security/legal assumptions are documented; local mapping/hash tests alone do not satisfy it.
+
 ## 14. Key risks and mitigations
 
 | Risk | Mitigation direction |
@@ -259,6 +295,8 @@ Deliver independent security/cryptographic review, penetration test, backup/rest
 | External-chain metadata/dependency risks | Privacy-review batch commitments; optional, replaceable anchoring |
 | Sandbox is mistaken for a production network | Keep it isolated; move all company key operations to participant gateways, add durable storage, rate limiting, production identity and authorization, operational monitoring, and independent security review before deployment |
 | ERP or agent integration is assumed to be production-ready | Validate live provider APIs and OAuth lifecycle; add trusted identity, transport, replay protection, retries, and operational monitoring before enabling real workflows |
+| ONDC ACK is mistaken for completed trade processing | Define ACK as receipt/acceptance only; use a durable queue, idempotent handlers, status reporting, retries, and tested Beckn timeout/error semantics before production |
+| MLETR hashing or a DSC signature is mistaken for legal title compliance | Bind a trusted signer and validated certificate chain to versioned transfer events; implement the relevant BTN profile, holder controls, revocation checks, evidence retention, and legal review |
 
 ## 15. Decisions required before architecture is fixed
 

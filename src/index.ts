@@ -1,4 +1,5 @@
 export * from "./agents/index.js";
+export * from "./adapters/index.js";
 export * from "./core/accounting.js";
 export * from "./core/canonical.js";
 export * from "./core/crypto.js";

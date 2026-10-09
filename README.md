@@ -108,6 +108,14 @@ The project now includes a company-owned AI gateway model that is designed for m
 
 This is the recommended pattern for cross-company AI communication when each company owns its own infrastructure and data boundary.
 
+### 7. Multi-network adapter scaffolding
+
+`src/adapters/` now contains typed ONDC, BharatTradeNet, and Sahamati adapter boundaries. The ONDC `POST /ondc/confirm` and `POST /ondc/update` routes return a Beckn ACK after validating and mapping the request, then schedule the supplied processor asynchronously. Confirmations map to a dedicated OTN purchase-order model; updates map either to a purchase-order update or to the existing validated OTN invoice model. The receiver is optional and must be supplied when constructing `HostedTradeNetwork`.
+
+The BharatTradeNet utilities canonicalize MLETR-shaped JSON with RFC 8785 and calculate SHA-256 digests. Class-3 DSC signing is represented by an injected signer interface: a real certificate-backed signer must be provided by an approved HSM/DSC integration. The Sahamati scaffold decodes a flexible consent payload, delegates signature verification and disclosure-scope authorization to injected interfaces, maps OTN invoice metadata into a small typed ReBIT-oriented model, and encrypts a package using ephemeral X25519 ECDH with AES-256-GCM.
+
+These adapter contracts are functional scaffolding, not production-certified network implementations. Beckn error codes, ReBIT schemas and encryption envelopes, Sahamati registry verification, ONDC request authentication, BTN/MLETR profile conformance, DSC trust-chain validation, retries, durable queueing, and operational controls must be aligned with the selected current network profiles before external deployment. The HTTP server's existing bearer-token protection is not a substitute for ONDC's required request authentication.
+
 ## Recommended communication pattern for AI + ERP + network
 
 The optimum pattern is not to let AI systems directly act as network peers. Instead:
