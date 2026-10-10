@@ -303,6 +303,12 @@ For BharatTradeNet, pin the BTN and MLETR data/legal profiles; implement the tra
 
 For both integrations, establish data minimization and retention rules, correlation/audit identifiers, operational monitoring, protocol-version upgrade policy, and bilateral conformance tests. The milestone exits only when sandbox exchange succeeds with the selected counterpart profiles and security/legal assumptions are documented; local mapping/hash tests alone do not satisfy it.
 
+### Phase 8: Pine Labs B2B vendor payouts (provider-neutral contract groundwork implemented; live integration pending)
+
+The POC defines typed payment terms, agreement references, payout intents, release policies, and a normalized adapter port. Each buyer is expected to disburse from its own Pine Labs merchant account; OTN must not pool or custody funds. Invoice approval and buyer approval of the delivery note are prerequisites, but current schemas do not verify those approvals or execute transfers. Payment completion is separate from invoice acceptance and must only follow confirmed provider success; reversals remain separately represented.
+
+Build in order: (1) obtain and pin Pine Labs' official payout API pack and sandbox behavior; (2) settle buyer approval policy, installment allocation/rounding, banking windows, and credit-note/dispute behavior; (3) add durable payout, approval, webhook inbox, and outbox storage with uniqueness constraints; (4) implement eligibility, due-date calculation, role checks, and audit; (5) implement the adapter against the confirmed contract; (6) add signature-verified, replay-safe webhook processing plus reconciliation; (7) pass sandbox failure/retry/reversal cases and pilot individual payments; (8) complete security, operational, legal, and provider readiness reviews before enabling real funds. Do not infer endpoint schemas, webhook signatures, status semantics, or idempotency guarantees from secondary CLI documentation.
+
 ## 14. Key risks and mitigations
 
 | Risk | Mitigation direction |

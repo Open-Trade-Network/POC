@@ -41,6 +41,8 @@ The sandbox HTTP server is a relay and in-memory test harness, not an authority 
 - `src/adapters/ondc/`: Beckn parsing, OTN mapping, ACK/NACK conversion, async callback controller.
 - `src/adapters/bharattradenet/`: MLETR-shaped schema, canonical hash and injected DSC signer boundary.
 - `src/adapters/sahamati/`: consent/FI mapping interfaces and package encryption/decryption.
+- `src/adapters/pinelabs/`: provider-neutral payout port and normalized provider status mapping; no Pine Labs API client yet.
+- `src/core/payouts.ts`: payment terms, agreements, payout intent schemas, and release-policy evaluation.
 - `src/erp/`: Zoho Books HTTP client, invoice mapping and sync adapter.
 - `src/agents/`: company-owned signed intent and local policy gateway.
 - `src/demo/`: demo orchestration, fake Zoho endpoint, and demo web server.
@@ -193,6 +195,32 @@ if (!result.ok) {
 ```
 
 `registryBackedVerifier` and `consentScopePolicy` above are application-supplied implementations, not included services. This repository does **not** call the Sahamati registry, validate current official consent artefacts, implement AA authentication or FI request/response transport, or provide a certified ReBIT schema/envelope. Before a pilot: pin official versions and test vectors, implement registry trust and key rotation/revocation, enforce consent expiry and purpose/field scope, add audit and replay controls, validate the actual FI data schema and encryption envelope, and obtain applicable governance/compliance review. Never use the current simplified mapping to make a real credit decision or disclose real financial information.
+
+## Pine Labs vendor payout foundation (contract only)
+
+The POC now has provider-independent groundwork, not an operational payout integration:
+
+- `PaymentTermsTemplateSchema` supports versioned reusable templates.
+- `AgreedPaymentTermsSchema` binds a versioned terms snapshot to an invoice revision and holds separate buyer and seller agreement-event references.
+- Schedules support fixed INR minor-unit installments or percentage allocations, with due days measured from buyer approval of a delivery note.
+- Buyer release policy is separate from the mutually agreed commercial payment terms. It supports manual, automatic, and threshold-based modes. The buyer selects whether amounts below the threshold are automatic or still require approval; amounts at or above it require approval.
+- `PayoutIntentSchema` carries invoice and delivery approval references and timestamps, a versioned buyer policy snapshot, release authorization evidence, a stable OTN idempotency key, amount, due time, provider/account/beneficiary references, and a payout state separate from TEA and invoice states.
+- `PineLabsPayoutPort` defines the future submission, status-query, and webhook-verification boundary. Normalized provider outcomes map `ACCEPTED` conservatively to `PROCESSING`; only `SUCCEEDED` maps to a paid outcome.
+
+The schemas validate shape only. They do not look up or verify approval events, calculate due dates, enforce buyer authorization, reserve funds, execute payouts, or persist intents. The port is deliberately not an HTTP client: Pine Labs' official payout pack must define endpoint paths, authentication, field mapping, idempotency semantics, webhook signatures, status transitions, retries, and cancellation behavior before implementation. No Pine Labs secrets or bank account details belong in shared TEA events.
+
+### Step-by-step implementation plan
+
+1. **Pin the provider contract.** Obtain the official API pack, Postman collection, sandbox credentials, webhook examples, and test cases. Record the confirmed API version, auth/token renewal, buyer-account setup, beneficiary lifecycle, limits, rails/cutoffs/holidays, statuses, duplicate behavior, and reversal semantics.
+2. **Finalize buyer policy and terms.** Confirm who may approve, buyer-level defaults and per-payment overrides, partial-installment arithmetic/rounding, credit-note/dispute behavior, and banking-calendar rules. Version both the terms snapshot and buyer release policy.
+3. **Add durable payout storage.** Persist terms/templates, approval evidence references, payout intents, provider identifiers, webhook inbox/deduplication records, and an outbox. Add database uniqueness constraints for OTN idempotency keys and provider event IDs. Do not use the in-memory ledger as the payout source of truth.
+4. **Implement eligibility and authorization.** Verify invoice and delivery approvals against authenticated OTN events; compute installment amounts and due dates; require both parties' terms agreement; enforce buyer roles and threshold policy; create an auditable authorization before any provider call.
+5. **Implement the Pine Labs adapter.** Map the confirmed API into `PineLabsPayoutPort`; store credentials outside business data; submit one payout per installment with the provider-supported idempotency/reference mechanism. On ambiguous timeouts, query by that reference before any resubmission.
+6. **Add webhook and reconciliation processing.** Preserve raw-body signature verification, deduplicate provider events, validate status transitions, and update payout state transactionally. Poll unresolved payouts as fallback if the contract permits; alert on stale or contradictory provider state.
+7. **Test in sandbox and pilot.** Cover success, pending, timeout, duplicate, validation failure, insufficient funds, cancellation, reversal, webhook replay/forgery, and polling recovery. Pilot individual payouts before designing bulk payout processing.
+8. **Review production readiness.** Complete security/privacy review, buyer credential isolation, audit/retention policy, operational alerts and runbooks, backup/recovery drills, legal/compliance review, and provider approval before real funds are enabled.
+
+Until these steps are complete, this code must not be used to move funds or represented as a live Pine Labs connection.
 
 ## 11. Zoho and company-owned AI gateway
 

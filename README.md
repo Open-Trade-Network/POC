@@ -127,6 +127,14 @@ There is no connection to the Sahamati registry or its public-key endpoints, no 
 
 These adapter contracts are functional scaffolding, not production-certified network implementations. Beckn profile-specific validation and request authentication, ReBIT schemas and encryption envelopes, Sahamati registry verification and AA transport, BTN/MLETR profile conformance, DSC trust-chain validation, retries, durable queueing, and operational controls must be aligned with selected current network profiles before external deployment. The HTTP server's existing bearer-token protection is not a substitute for ONDC's required request authentication.
 
+### 8. Pine Labs B2B payout foundation
+
+`src/core/payouts.ts` adds typed INR payment terms, versioned reusable templates, bilateral agreement references, payout-intent metadata, release-policy evaluation, and a distinct payout status model. `src/adapters/pinelabs/` defines a provider boundary and normalized outcomes only. It does not call Pine Labs, implement authentication or webhook verification, or claim to match a live API contract.
+
+The model supports manual, automatic, and threshold-based release. For threshold policy, the buyer configures whether installments below the threshold are auto-released or still require approval; installments at or above the threshold require approval. Terms may use fixed minor-unit amounts or percentage allocations and define due days from buyer delivery-note approval. The schemas retain approval event references; they do not yet verify that those events exist or are authorized.
+
+No payout routes, durable persistence, worker/queue, buyer approval UI, reconciliation process, or payment execution are implemented. The current network is in-memory and does not settle funds. Implement exact Pine Labs field mappings, idempotency, status meanings, webhook signature verification, and retry/cancel behavior only after reviewing the official payout API pack and sandbox.
+
 ## Developer documentation
 
 See the [OTN Developer and Protocol Contribution Guide](docs/DEVELOPER_GUIDE.md) for the repository map, API and adapter boundaries, AA/ONDC/BTN scaffold status, local setup, protocol lifecycle, security limits, and the process for proposing protocol changes. A formatted [ODT version](docs/OTN-Developer-Guide.odt) is provided for publishing or displaying to developers.
