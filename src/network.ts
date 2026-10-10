@@ -13,8 +13,10 @@ import {
   type LedgerRecord,
   type TripleEntryEvent,
   type TripleEntryEventRecord,
+  TripleEntryConflictError,
   verifyLedgerProposal,
 } from "./core/ledger.js";
+import type { WitnessedInclusionProof } from "./core/transparency.js";
 import { TradeDocumentSchema, type TradeDocument } from "./core/schema.js";
 import { toBecknNack, type OndcAction, type OndcWebhookController } from "./adapters/ondc/index.js";
 
@@ -53,16 +55,41 @@ const LedgerProposalSchema = z.object({
 }).strict();
 
 const TripleEntryEventSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   sequence: z.number().int().nonnegative(),
   eventId: z.string().min(1).max(256),
   transactionId: z.string().min(1).max(256),
+  documentId: z.string().min(1).max(128),
+  documentRevision: z.number().int().nonnegative(),
+  documentDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   commitment: z.string().min(1).max(256),
-  commitmentSalt: z.string().min(1).max(256).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+  supersedesEventHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
+  verification: z.object({
+    derivationRulesVersion: z.string().min(1).max(128),
+    rederivedCommitment: z.string().min(1).max(256),
+  }).strict().optional(),
+  disputeReason: z.enum(["ARITHMETIC_MISMATCH", "TAX_MISMATCH", "DOCUMENT_MISMATCH", "OTHER"]).optional(),
+  witnessedSubmission: z.object({
+    eventHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    leafIndex: z.number().int().nonnegative(),
+    inclusionPath: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(64),
+    checkpoint: z.object({
+      version: z.literal(1),
+      logId: z.string().min(1).max(128),
+      treeSize: z.number().int().positive(),
+      rootHash: z.string().regex(/^[a-f0-9]{64}$/),
+      timestamp: z.string().datetime({ offset: true }),
+      signatures: z.array(z.object({
+        witnessId: z.string().min(1).max(128),
+        signature: z.string().min(1).max(256),
+      }).strict()).max(100),
+    }).strict(),
+  }).strict().optional(),
   previousHash: z.string().max(256),
   sellerParticipantId: z.string().min(1).max(128),
   buyerParticipantId: z.string().min(1).max(128),
-  kind: z.enum(["SUBMITTED", "ACCEPTED", "DISPUTED"]),
+  kind: z.enum(["SUBMITTED", "ACCEPTED", "DISPUTED", "EXPIRED", "WITHDRAWN"]),
   actorParticipantId: z.string().min(1).max(128),
   occurredAt: z.string().datetime({ offset: true }),
   signature: z.string().min(1).max(256),
@@ -91,6 +118,9 @@ export interface HostedTradeNetworkOptions {
     cert: Buffer | string;
   };
   ondcWebhook?: OndcWebhookController;
+  witnessSigningKeys?: ReadonlyMap<string, string>;
+  minimumWitnessSignatures?: number;
+  witnessLogId?: string;
 }
 
 export interface PublicParticipantIdentity {
@@ -166,6 +196,9 @@ export class HostedTradeNetwork {
   private readonly maxRequestBodyBytes: number;
   private readonly tls: HostedTradeNetworkOptions["tls"];
   private readonly ondcWebhook: OndcWebhookController | undefined;
+  private readonly witnessSigningKeys: ReadonlyMap<string, string>;
+  private readonly minimumWitnessSignatures: number;
+  private readonly witnessLogId: string | undefined;
 
   constructor(options: HostedTradeNetworkOptions = {}) {
     this.host = options.host ?? "127.0.0.1";
@@ -175,7 +208,19 @@ export class HostedTradeNetwork {
     this.maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
     this.tls = options.tls;
     this.ondcWebhook = options.ondcWebhook;
-    this.teaLedger = new InMemoryTripleEntryLedger(this.trustedSigningKeys);
+    this.witnessSigningKeys = options.witnessSigningKeys ?? new Map();
+    this.minimumWitnessSignatures = options.minimumWitnessSignatures ?? 2;
+    this.witnessLogId = options.witnessLogId;
+    if (!Number.isInteger(this.minimumWitnessSignatures) || this.minimumWitnessSignatures < 2
+      || (this.witnessSigningKeys.size > 0 && this.minimumWitnessSignatures > this.witnessSigningKeys.size)) {
+      throw new Error("Minimum witness signatures must be at least two and no greater than the trusted witness set");
+    }
+    this.teaLedger = new InMemoryTripleEntryLedger(
+      this.trustedSigningKeys,
+      this.witnessSigningKeys,
+      this.minimumWitnessSignatures,
+      this.witnessLogId,
+    );
     if (this.apiToken && Buffer.byteLength(this.apiToken) < 32) {
       throw new Error("API token must be at least 32 bytes");
     }
@@ -315,14 +360,19 @@ export class HostedTradeNetwork {
     return structuredClone(record);
   }
 
-  async submitTripleEntryEvent(event: TripleEntryEvent): Promise<TripleEntryEventRecord> {
+  async submitTripleEntryEvent(
+    event: TripleEntryEvent,
+    witnessedInclusion?: WitnessedInclusionProof,
+  ): Promise<TripleEntryEventRecord> {
     if (!this.participants.has(event.sellerParticipantId) || !this.participants.has(event.buyerParticipantId)) {
       throw new HttpError(400, "Triple-entry event parties must be registered participants");
     }
     try {
-      return await this.teaLedger.append(event);
+      return await this.teaLedger.append(event, witnessedInclusion);
     } catch (error) {
-      throw new HttpError(400, error instanceof Error ? error.message : "Triple-entry event is invalid");
+      const message = error instanceof Error ? error.message : "Triple-entry event is invalid";
+      const conflict = error instanceof TripleEntryConflictError;
+      throw new HttpError(conflict ? 409 : 400, message);
     }
   }
 
@@ -497,9 +547,27 @@ export class HostedTradeNetwork {
       }
 
       if (request.method === "POST" && url.pathname === "/tea/events") {
-        const body = z.object({ event: TripleEntryEventSchema }).strict()
+        const body = z.object({
+          event: TripleEntryEventSchema,
+          witnessedInclusion: z.object({
+            eventHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+            leafIndex: z.number().int().nonnegative(),
+            inclusionPath: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(64),
+            checkpoint: z.object({
+              version: z.literal(1),
+              logId: z.string().min(1).max(128),
+              treeSize: z.number().int().positive(),
+              rootHash: z.string().regex(/^[a-f0-9]{64}$/),
+              timestamp: z.string().datetime({ offset: true }),
+              signatures: z.array(z.object({
+                witnessId: z.string().min(1).max(128),
+                signature: z.string().min(1).max(256),
+              }).strict()).max(100),
+            }).strict(),
+          }).strict().optional(),
+        }).strict()
           .parse(await readRequestBody(request, this.maxRequestBodyBytes));
-        const record = await this.submitTripleEntryEvent(body.event);
+        const record = await this.submitTripleEntryEvent(body.event, body.witnessedInclusion);
         this.sendJson(response, 201, { record });
         return;
       }

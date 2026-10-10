@@ -19,6 +19,7 @@ describe("one-click demo flow", () => {
     expect(snapshot.phase).toBe("complete");
     expect(snapshot.transactionStatus).toBe("CONFIRMED");
     expect(snapshot.error).toBeUndefined();
+    expect(snapshot.commitment).not.toHaveProperty("salt");
     expect(snapshot.steps.every((step) => step.status === "done")).toBe(true);
 
     // Real invoice math: 10×₹5,000 + 10×₹3,000 + 18% IGST = ₹94,400

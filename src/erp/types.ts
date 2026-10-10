@@ -1,5 +1,5 @@
 import type { SemanticAccountingTransaction } from "../core/accounting.js";
-import type { TripleEntryEventRecord } from "../core/ledger.js";
+import type { SaltedCommitment, TripleEntryEventRecord } from "../core/ledger.js";
 import type { SignedEnvelope } from "../core/crypto.js";
 import type { TradeDocument } from "../core/schema.js";
 
@@ -45,6 +45,7 @@ export interface SyncInvoiceResult {
   document: TradeDocument;
   envelope: SignedEnvelope;
   accountingTransaction: SemanticAccountingTransaction;
+  commitment: SaltedCommitment;
   teaEventRecord: TripleEntryEventRecord;
   status: "PROVISIONAL";
 }

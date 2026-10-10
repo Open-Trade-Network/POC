@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { CompanyAgentGateway, type SignedAgentIntent } from "../agents/gateway.js";
-import { deriveSemanticAccountingTransaction, type SemanticAccountingTransaction } from "../core/accounting.js";
+import { bindTradeDocument, deriveSemanticAccountingTransaction, type SemanticAccountingTransaction } from "../core/accounting.js";
 import { canonicalBytes, canonicalJson, sha256Base64Url } from "../core/canonical.js";
 import {
-  createEnvelope,
+  createPrivateTradePackageEnvelope,
   createParticipantKeys,
-  openEnvelope,
+  openPrivateTradePackageEnvelope,
   signMessage,
   verifyEnvelope,
   verifyMessage,
@@ -14,11 +14,14 @@ import {
 } from "../core/crypto.js";
 import {
   createSaltedCommitment,
+  createCounterpartyVerificationAttestation,
   InMemoryTripleEntryLedger,
   signTripleEntryEvent,
   verifySaltedCommitment,
+  type SaltedCommitment,
   type TripleEntryEventRecord,
 } from "../core/ledger.js";
+import { createWitnessedInclusionProof } from "../core/transparency.js";
 import { TradeDocumentSchema, type TradeDocument } from "../core/schema.js";
 import { mapZohoInvoiceToTradeDocument } from "../erp/zoho-invoice-sync.js";
 import { ZohoBooksClient } from "../erp/zoho.js";
@@ -81,7 +84,7 @@ export interface DemoSnapshot {
   invoice?: DemoInvoiceView;
   document?: DemoDocumentView;
   envelope?: SignedEnvelope;
-  commitment?: { digest: string; salt: string };
+  commitment?: { digest: string };
   accountingTransaction?: SemanticAccountingTransaction;
   intents: { validationRequest?: SignedAgentIntent; acceptance?: SignedAgentIntent };
   events: TripleEntryEventRecord[];
@@ -94,6 +97,7 @@ export interface DemoSnapshot {
 interface DemoSessionOptions {
   network: HostedTradeNetwork;
   erpBaseUrl: string | (() => string);
+  witnessKeys: ParticipantKeyMaterial[];
   stepDelayMs?: number;
 }
 
@@ -163,6 +167,7 @@ function idleSnapshot(networkUrl: string): DemoSnapshot {
  */
 export class DemoSession {
   private snapshot: DemoSnapshot;
+  private commitment: SaltedCommitment | undefined;
   private readonly listeners = new Set<(snapshot: DemoSnapshot) => void>();
   private running = false;
 
@@ -198,6 +203,7 @@ export class DemoSession {
     this.running = true;
     const delay = this.options.stepDelayMs ?? 450;
     const startedAt = Date.now();
+    this.commitment = undefined;
     this.snapshot = idleSnapshot(this.options.network.url);
     this.snapshot.phase = "running";
     this.snapshot.generatedAt = new Date().toISOString();
@@ -358,8 +364,14 @@ export class DemoSession {
 
       // ── ENCRYPT: sealed box to the buyer's encryption key.
       const envelope = await step("encrypt", async () => {
-        const envelope = await createEnvelope(
-          document,
+        const transactionId = `tea:${document.documentId}:${document.revision}`;
+        const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
+        const commitment = createSaltedCommitment(accountingTransaction);
+        this.snapshot.accountingTransaction = accountingTransaction;
+        this.commitment = commitment;
+        this.snapshot.commitment = { digest: commitment.digest };
+        const envelope = await createPrivateTradePackageEnvelope(
+          { document, commitmentSalt: commitment.salt },
           sellerKeys,
           BUYER.participantId,
           buyerKeys.encryptionPublicKey,
@@ -378,17 +390,20 @@ export class DemoSession {
       // transaction, commits to it, signs and appends the provisional event.
       const { accountingTransaction, submittedRecord } = await step("network_verify", async () => {
         const transactionId = `tea:${document.documentId}:${document.revision}`;
-        const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
-        const commitment = createSaltedCommitment(accountingTransaction);
+        const accountingTransaction = this.snapshot.accountingTransaction;
+        const commitment = this.commitment;
+        if (!accountingTransaction || !commitment) {
+          throw new Error("Seller commitment package is missing from local demo state");
+        }
         const eventsResponse = await getJson(baseUrl, "/tea/events") as { events: TripleEntryEventRecord[] };
         const previous = eventsResponse.events.at(-1);
         const submitted = await signTripleEntryEvent({
-          version: 1,
+          version: 2,
           sequence: eventsResponse.events.length,
-          eventId: randomUUID(),
           transactionId,
+          ...bindTradeDocument(document),
           commitment: commitment.digest,
-          commitmentSalt: commitment.salt,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
           previousHash: previous?.eventHash ?? "",
           sellerParticipantId: SELLER.participantId,
           buyerParticipantId: BUYER.participantId,
@@ -397,7 +412,8 @@ export class DemoSession {
           occurredAt: new Date().toISOString(),
         }, sellerKeys);
         const appendResponse = await postJson(baseUrl, "/tea/events", { event: submitted }) as { record: TripleEntryEventRecord };
-        this.snapshot.commitment = commitment;
+        this.commitment = commitment;
+        this.snapshot.commitment = { digest: commitment.digest };
         this.snapshot.accountingTransaction = accountingTransaction;
         this.snapshot.events = [...this.snapshot.events, appendResponse.record];
         this.snapshot.transactionStatus = "PROVISIONAL";
@@ -436,10 +452,15 @@ export class DemoSession {
       });
 
       // ── DECRYPT: only the buyer's private key can open it.
-      const decryptedDocument = await step("decrypt", async () => {
-        const decrypted = await openEnvelope(receivedEnvelope, buyerKeys, sellerKeys.signingPublicKey);
-        return { detail: `Sealed box opened → ${decrypted.documentNumber}`, result: decrypted };
+      const decryptedPackage = await step("decrypt", async () => {
+        const decrypted = await openPrivateTradePackageEnvelope(
+          receivedEnvelope,
+          buyerKeys,
+          sellerKeys.signingPublicKey,
+        );
+        return { detail: `Sealed box opened → ${decrypted.document.documentNumber}`, result: decrypted };
       });
+      const decryptedDocument = decryptedPackage.document;
       TradeDocumentSchema.parse(decryptedDocument);
 
       // ── VERIFY: signature, ciphertext integrity and document digest.
@@ -475,7 +496,7 @@ export class DemoSession {
         const commitmentVerified = verifySaltedCommitment(
           buyerDerived,
           submittedRecord.commitment,
-          submittedRecord.commitmentSalt!,
+          decryptedPackage.commitmentSalt,
         );
         const accountingMatch = canonicalJson(buyerDerived) === canonicalJson(this.snapshot.accountingTransaction);
         if (!commitmentVerified || !accountingMatch) {
@@ -508,20 +529,46 @@ export class DemoSession {
         }
 
         const eventsResponse = await getJson(baseUrl, "/tea/events") as { events: TripleEntryEventRecord[] };
+        const witnessedSubmission = await createWitnessedInclusionProof(
+          eventsResponse.events.map((event) => event.eventHash),
+          submittedRecord.eventHash,
+          "demo-trade-log",
+          this.options.witnessKeys,
+          new Date().toISOString(),
+        );
         const accepted = await signTripleEntryEvent({
-          version: 1,
+          version: 2,
           sequence: eventsResponse.events.length,
-          eventId: randomUUID(),
           transactionId: submittedRecord.transactionId,
+          documentId: submittedRecord.documentId,
+          documentRevision: submittedRecord.documentRevision,
+          documentDigest: submittedRecord.documentDigest,
           commitment: submittedRecord.commitment,
+          verification: createCounterpartyVerificationAttestation(
+            accountingTransaction,
+            submittedRecord.commitment,
+            decryptedPackage.commitmentSalt,
+            "otn-accounting-v1",
+          ),
+          witnessedSubmission,
           previousHash: eventsResponse.events.at(-1)?.eventHash ?? "",
           sellerParticipantId: SELLER.participantId,
           buyerParticipantId: BUYER.participantId,
           kind: "ACCEPTED",
           actorParticipantId: BUYER.participantId,
-          occurredAt: new Date().toISOString(),
+          occurredAt: new Date(Date.parse(witnessedSubmission.checkpoint.timestamp) + 1000).toISOString(),
         }, buyerKeys);
-        const appendResponse = await postJson(baseUrl, "/tea/events", { event: accepted }) as { record: TripleEntryEventRecord };
+        const witnessedAcceptance = await createWitnessedInclusionProof(
+          [submittedRecord.eventHash, sha256Base64Url(canonicalBytes(accepted))],
+          sha256Base64Url(canonicalBytes(accepted)),
+          "demo-trade-log",
+          this.options.witnessKeys,
+          new Date(Date.parse(witnessedSubmission.checkpoint.timestamp) + 2000).toISOString(),
+        );
+        const appendResponse = await postJson(baseUrl, "/tea/events", {
+          event: accepted,
+          witnessedInclusion: witnessedAcceptance,
+        }) as { record: TripleEntryEventRecord };
         this.snapshot.events = [...this.snapshot.events, appendResponse.record];
         this.snapshot.transactionStatus = "CONFIRMED";
         return { detail: "Buyer-signed ACCEPTED event appended" };
@@ -542,10 +589,15 @@ export class DemoSession {
         for (const participant of [this.snapshot.participants.seller, this.snapshot.participants.buyer]) {
           if (participant.signingPublicKey) trustedKeys.set(participant.participantId, participant.signingPublicKey);
         }
-        const replay = new InMemoryTripleEntryLedger(trustedKeys);
+        const replay = new InMemoryTripleEntryLedger(
+          trustedKeys,
+          new Map(this.options.witnessKeys.map((witness) => [witness.participantId, witness.signingPublicKey])),
+          2,
+          "demo-trade-log",
+        );
         for (const record of statusResponse.events) {
-          const { eventHash, ...event } = record;
-          const replayed = await replay.append(event);
+          const { eventHash, witnessedInclusion, ...event } = record;
+          const replayed = await replay.append(event, witnessedInclusion);
           if (replayed.eventHash !== eventHash) {
             throw new Error("Hash chain replay produced a different event hash");
           }

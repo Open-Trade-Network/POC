@@ -1,10 +1,29 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalBytes, canonicalJson, sha256Base64Url } from "./canonical.js";
 import { signMessage, verifyMessage, type ParticipantKeyMaterial } from "./crypto.js";
+import {
+  verifyWitnessedInclusionProof,
+  type WitnessedInclusionProof,
+} from "./transparency.js";
+export { createWitnessedInclusionProof } from "./transparency.js";
 
 export interface LedgerSignature {
   participantId: string;
   signature: string;
+}
+
+export class TripleEntryConflictError extends Error {}
+
+export function createCounterpartyVerificationAttestation(
+  privateEvent: unknown,
+  commitment: string,
+  salt: string,
+  derivationRulesVersion: typeof SUPPORTED_DERIVATION_RULES_VERSIONS[number],
+): CounterpartyVerificationAttestation {
+  if (!verifySaltedCommitment(privateEvent, commitment, salt)) {
+    throw new Error("Derived accounting data does not match the submitted commitment");
+  }
+  return { derivationRulesVersion, rederivedCommitment: commitment };
 }
 
 export interface LedgerProposal {
@@ -161,16 +180,34 @@ export class InMemoryAppendOnlyLedger {
   }
 }
 
-export type TripleEntryEventKind = "SUBMITTED" | "ACCEPTED" | "DISPUTED";
-export type TEATransactionStatus = "PROVISIONAL" | "CONFIRMED" | "DISPUTED";
+export type TripleEntryEventKind = "SUBMITTED" | "ACCEPTED" | "DISPUTED" | "EXPIRED" | "WITHDRAWN";
+export type TEATransactionStatus = "PROVISIONAL" | "CONFIRMED" | "DISPUTED" | "EXPIRED" | "WITHDRAWN";
+export type TripleEntryDisputeReason =
+  | "ARITHMETIC_MISMATCH"
+  | "TAX_MISMATCH"
+  | "DOCUMENT_MISMATCH"
+  | "OTHER";
+
+export interface CounterpartyVerificationAttestation {
+  derivationRulesVersion: string;
+  rederivedCommitment: string;
+}
+export const SUPPORTED_DERIVATION_RULES_VERSIONS = ["otn-accounting-v1"] as const;
 
 export interface TripleEntryEvent {
-  version: 1;
+  version: 2;
   sequence: number;
   eventId: string;
   transactionId: string;
+  documentId: string;
+  documentRevision: number;
+  documentDigest: string;
   commitment: string;
-  commitmentSalt?: string | undefined;
+  expiresAt?: string | undefined;
+  supersedesEventHash?: string | undefined;
+  verification?: CounterpartyVerificationAttestation | undefined;
+  disputeReason?: TripleEntryDisputeReason | undefined;
+  witnessedSubmission?: WitnessedInclusionProof | undefined;
   previousHash: string;
   sellerParticipantId: string;
   buyerParticipantId: string;
@@ -182,9 +219,25 @@ export interface TripleEntryEvent {
 
 export interface TripleEntryEventRecord extends TripleEntryEvent {
   eventHash: string;
+  witnessedInclusion?: WitnessedInclusionProof;
 }
 
-export type UnsignedTripleEntryEvent = Omit<TripleEntryEvent, "signature">;
+export type UnsignedTripleEntryEvent = Omit<TripleEntryEvent, "eventId" | "signature"> & { eventId?: string };
+
+export function deriveTripleEntryEventId(input: {
+  actorParticipantId: string;
+  documentId: string;
+  documentRevision: number;
+  kind: TripleEntryEventKind;
+}): string {
+  return sha256Base64Url(canonicalBytes({
+    protocol: "otn-tea-event-id-v2",
+    actorParticipantId: input.actorParticipantId,
+    documentId: input.documentId,
+    documentRevision: input.documentRevision,
+    kind: input.kind,
+  }));
+}
 
 function unsignedTripleEntryEvent(event: TripleEntryEvent): UnsignedTripleEntryEvent {
   const { signature: _signature, ...unsigned } = event;
@@ -198,14 +251,30 @@ export async function signTripleEntryEvent(
   if (event.actorParticipantId !== signer.participantId) {
     throw new Error("Event actor must match the signing participant");
   }
+  const eventId = deriveTripleEntryEventId({
+    actorParticipantId: event.actorParticipantId,
+    documentId: event.documentId,
+    documentRevision: event.documentRevision,
+    kind: event.kind,
+  });
+  if (event.eventId !== undefined && event.eventId !== eventId) {
+    throw new Error("Event ID does not match the deterministic protocol identifier");
+  }
+  const unsigned = { ...event, version: 2 as const, eventId };
   return {
-    ...event,
-    signature: await signMessage(canonicalBytes(event), signer.signingPrivateKey),
+    ...unsigned,
+    signature: await signMessage(canonicalBytes(unsigned), signer.signingPrivateKey),
   };
 }
 
 interface TransactionLifecycle {
   commitment: string;
+  documentId: string;
+  documentRevision: number;
+  documentDigest: string;
+  submissionEventHash: string;
+  submittedAt: string;
+  expiresAt: string;
   sellerParticipantId: string;
   buyerParticipantId: string;
   submitterParticipantId: string;
@@ -214,13 +283,27 @@ interface TransactionLifecycle {
 
 export class InMemoryTripleEntryLedger {
   private readonly records: TripleEntryEventRecord[] = [];
-  private readonly eventIds = new Set<string>();
+  private readonly eventsById = new Map<string, TripleEntryEventRecord>();
   private readonly transactions = new Map<string, TransactionLifecycle>();
+  private readonly revisions = new Map<string, { digest: string; eventHash: string }>();
   private appendQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly trustedSigningKeys: ReadonlyMap<string, string>) {}
+  constructor(
+    private readonly trustedSigningKeys: ReadonlyMap<string, string>,
+    private readonly trustedWitnessSigningKeys: ReadonlyMap<string, string> = new Map(),
+    private readonly minimumWitnessSignatures = 2,
+    private readonly expectedWitnessLogId?: string,
+  ) {
+    if (!Number.isInteger(minimumWitnessSignatures) || minimumWitnessSignatures < 2
+      || (trustedWitnessSigningKeys.size > 0 && minimumWitnessSignatures > trustedWitnessSigningKeys.size)) {
+      throw new Error("Minimum witness signatures must be at least two and no greater than the trusted witness set");
+    }
+  }
 
-  async append(event: TripleEntryEvent): Promise<TripleEntryEventRecord> {
+  async append(
+    event: TripleEntryEvent,
+    witnessedInclusion?: WitnessedInclusionProof,
+  ): Promise<TripleEntryEventRecord> {
     const previousAppend = this.appendQueue;
     let releaseQueue!: () => void;
     this.appendQueue = new Promise<void>((resolve) => {
@@ -228,31 +311,55 @@ export class InMemoryTripleEntryLedger {
     });
     await previousAppend;
     try {
-      return await this.appendInOrder(event);
+      return await this.appendInOrder(event, witnessedInclusion);
     } finally {
       releaseQueue();
     }
   }
 
-  private async appendInOrder(event: TripleEntryEvent): Promise<TripleEntryEventRecord> {
+  private async appendInOrder(
+    event: TripleEntryEvent,
+    witnessedInclusion?: WitnessedInclusionProof,
+  ): Promise<TripleEntryEventRecord> {
+    const existing = this.eventsById.get(event.eventId);
+    if (existing) {
+      const {
+        eventHash: _eventHash,
+        witnessedInclusion: _witnessedInclusion,
+        ...recordedEvent
+      } = existing;
+      if (canonicalJson(recordedEvent) === canonicalJson(event)) return structuredClone(existing);
+      throw new TripleEntryConflictError("Event ID was reused for conflicting signed content");
+    }
     const previous = this.records.at(-1);
-    if (event.version !== 1 || !Number.isInteger(event.sequence) || event.sequence < 0) {
+    if (event.version !== 2 || !Number.isInteger(event.sequence) || event.sequence < 0) {
       throw new Error("Triple-entry event version or sequence is invalid");
     }
     if (event.sequence !== this.records.length || event.previousHash !== (previous?.eventHash ?? "")) {
-      throw new Error("Triple-entry event does not extend the current chain head");
+      throw new TripleEntryConflictError("Triple-entry event does not extend the current chain head");
     }
-    if (!event.eventId || this.eventIds.has(event.eventId)) {
-      throw new Error("Triple-entry event ID is missing or duplicated");
+    if (!event.eventId
+      || event.eventId !== deriveTripleEntryEventId({
+        actorParticipantId: event.actorParticipantId,
+        documentId: event.documentId,
+        documentRevision: event.documentRevision,
+        kind: event.kind,
+      })) {
+      throw new Error("Triple-entry event ID is invalid or not deterministic");
     }
-    if (!event.transactionId || !event.commitment || !Number.isFinite(Date.parse(event.occurredAt))) {
-      throw new Error("Triple-entry event transaction, commitment, or timestamp is invalid");
+    if (!event.transactionId || !event.documentId || !event.commitment
+      || !/^[A-Za-z0-9_-]{43}$/.test(event.documentDigest)
+      || Buffer.from(event.documentDigest, "base64url").length !== 32
+      || Buffer.from(event.documentDigest, "base64url").toString("base64url") !== event.documentDigest
+      || !Number.isInteger(event.documentRevision) || event.documentRevision < 0
+      || !Number.isFinite(Date.parse(event.occurredAt))) {
+      throw new Error("Triple-entry event document binding, commitment, or timestamp is invalid");
     }
     if (!event.sellerParticipantId || !event.buyerParticipantId
       || event.sellerParticipantId === event.buyerParticipantId) {
       throw new Error("Triple-entry event requires two distinct counterparties");
     }
-    if (event.kind !== "SUBMITTED" && event.kind !== "ACCEPTED" && event.kind !== "DISPUTED") {
+    if (!["SUBMITTED", "ACCEPTED", "DISPUTED", "EXPIRED", "WITHDRAWN"].includes(event.kind)) {
       throw new Error("Triple-entry event kind is invalid");
     }
     if (![event.sellerParticipantId, event.buyerParticipantId].includes(event.actorParticipantId)) {
@@ -270,45 +377,158 @@ export class InMemoryTripleEntryLedger {
 
     const lifecycle = this.transactions.get(event.transactionId);
     if (event.kind === "SUBMITTED") {
-      if (lifecycle) throw new Error("Transaction has already been submitted");
-      if (!event.commitmentSalt
-        || !/^[A-Za-z0-9_-]{43}$/.test(event.commitmentSalt)
-        || Buffer.from(event.commitmentSalt, "base64url").length !== 32
-        || Buffer.from(event.commitmentSalt, "base64url").toString("base64url") !== event.commitmentSalt) {
-        throw new Error("Submission requires a 32-byte commitment salt");
+      if (lifecycle) throw new TripleEntryConflictError("Transaction has already been submitted");
+      const revisionKey = `${event.sellerParticipantId}:${event.documentId}:${event.documentRevision}`;
+      if (this.revisions.has(revisionKey)) {
+        throw new TripleEntryConflictError("Sender has already submitted this document revision");
+      }
+      if (!event.expiresAt || !Number.isFinite(Date.parse(event.expiresAt))) {
+        throw new Error("Submission requires a valid expiry timestamp");
+      }
+      const lifetime = Date.parse(event.expiresAt) - Date.parse(event.occurredAt);
+      if (lifetime < 60_000 || lifetime > 30 * 24 * 60 * 60 * 1000) {
+        throw new Error("Submission expiry must be between one minute and 30 days after submission");
+      }
+      if (event.documentRevision === 0 && event.supersedesEventHash !== undefined) {
+        throw new Error("The initial document revision cannot supersede an earlier event");
+      }
+      if (event.documentRevision > 0) {
+        const priorRevision = this.revisions.get(
+          `${event.sellerParticipantId}:${event.documentId}:${event.documentRevision - 1}`,
+        );
+        if (!priorRevision || event.supersedesEventHash !== priorRevision.eventHash) {
+          throw new Error("Revised document must reference the preceding revision event");
+        }
+      }
+      if (event.verification || event.disputeReason || event.witnessedSubmission) {
+        throw new Error("Submission cannot contain a counterparty decision or witness proof");
       }
     } else {
       if (!lifecycle || lifecycle.status !== "PROVISIONAL") {
-        throw new Error("Only a provisional transaction can be accepted or disputed");
+        throw new TripleEntryConflictError("Only a provisional transaction can be accepted or disputed");
       }
-      if (event.actorParticipantId === lifecycle.submitterParticipantId) {
-        throw new Error("Only the counterparty can accept or dispute a submission");
+      if (event.kind === "WITHDRAWN") {
+        if (event.actorParticipantId !== lifecycle.submitterParticipantId) {
+          throw new TripleEntryConflictError("Only the submitter can withdraw a provisional transaction");
+        }
+      } else if (event.actorParticipantId === lifecycle.submitterParticipantId) {
+        throw new TripleEntryConflictError("Only the counterparty can accept or dispute a submission");
       }
       if (event.commitment !== lifecycle.commitment
+        || event.documentId !== lifecycle.documentId
+        || event.documentRevision !== lifecycle.documentRevision
+        || event.documentDigest !== lifecycle.documentDigest
         || event.sellerParticipantId !== lifecycle.sellerParticipantId
         || event.buyerParticipantId !== lifecycle.buyerParticipantId) {
         throw new Error("Counterparty event does not match the submitted transaction");
       }
-      if (event.commitmentSalt !== undefined) {
-        throw new Error("Counterparty decision must not change the commitment salt");
+      if (event.kind === "ACCEPTED") {
+        const witnessIds = event.witnessedSubmission?.checkpoint.signatures.map((item) => item.witnessId) ?? [];
+        const acceptanceEventHash = sha256Base64Url(canonicalBytes(event));
+        if (!event.verification || event.verification.rederivedCommitment !== lifecycle.commitment
+          || !SUPPORTED_DERIVATION_RULES_VERSIONS.includes(
+            event.verification.derivationRulesVersion as typeof SUPPORTED_DERIVATION_RULES_VERSIONS[number],
+          )
+          || event.disputeReason !== undefined
+          || !event.witnessedSubmission
+          || event.witnessedSubmission.eventHash !== lifecycle.submissionEventHash
+          || witnessIds.includes(lifecycle.sellerParticipantId)
+          || witnessIds.includes(lifecycle.buyerParticipantId)
+          || !await verifyWitnessedInclusionProof(
+            event.witnessedSubmission,
+            this.trustedWitnessSigningKeys,
+            this.minimumWitnessSignatures,
+            this.expectedWitnessLogId,
+          )
+          || Date.parse(event.witnessedSubmission.checkpoint.timestamp) < Date.parse(lifecycle.submittedAt)
+          || Date.parse(event.witnessedSubmission.checkpoint.timestamp) >= Date.parse(lifecycle.expiresAt)
+          || !witnessedInclusion
+          || witnessedInclusion.eventHash !== acceptanceEventHash
+          || !await verifyWitnessedInclusionProof(
+            witnessedInclusion,
+            this.trustedWitnessSigningKeys,
+            this.minimumWitnessSignatures,
+            this.expectedWitnessLogId,
+          )
+          || witnessedInclusion.checkpoint.treeSize <= event.witnessedSubmission.checkpoint.treeSize
+          || Date.parse(witnessedInclusion.checkpoint.timestamp) < Date.parse(event.witnessedSubmission.checkpoint.timestamp)
+          || Date.parse(witnessedInclusion.checkpoint.timestamp) >= Date.parse(lifecycle.expiresAt)) {
+          throw new Error("Acceptance requires witnessed inclusion of both submission and acceptance before expiry, plus a matching verification attestation");
+        }
+      } else if (event.kind === "DISPUTED") {
+        if (!event.disputeReason || event.verification !== undefined
+          || event.witnessedSubmission !== undefined) {
+          throw new Error("Dispute requires a typed reason and cannot claim successful verification");
+        }
+      } else if (event.kind === "EXPIRED") {
+        const witnessIds = event.witnessedSubmission?.checkpoint.signatures.map((item) => item.witnessId) ?? [];
+        if (event.actorParticipantId !== lifecycle.buyerParticipantId
+          || !event.witnessedSubmission
+          || event.witnessedSubmission.eventHash !== lifecycle.submissionEventHash
+          || witnessIds.includes(lifecycle.sellerParticipantId)
+          || witnessIds.includes(lifecycle.buyerParticipantId)
+          || !await verifyWitnessedInclusionProof(
+            event.witnessedSubmission,
+            this.trustedWitnessSigningKeys,
+            this.minimumWitnessSignatures,
+            this.expectedWitnessLogId,
+          )
+          || Date.parse(event.witnessedSubmission.checkpoint.timestamp) < Date.parse(lifecycle.expiresAt)
+          || Date.parse(event.occurredAt) < Date.parse(event.witnessedSubmission.checkpoint.timestamp)) {
+          throw new Error("Expiry requires the counterparty and a witnessed checkpoint at or after submission expiry");
+        }
+      } else if (event.kind === "WITHDRAWN") {
+        if (event.verification || event.disputeReason || event.witnessedSubmission) {
+          throw new Error("Withdrawal cannot contain another lifecycle decision's evidence");
+        }
+      }
+      if (event.kind !== "ACCEPTED" && event.verification !== undefined) {
+        throw new Error("Verification attestation is only valid on acceptance events");
+      }
+      if (event.kind !== "DISPUTED" && event.disputeReason !== undefined) {
+        throw new Error("Dispute reason is only valid on dispute events");
+      }
+      if (event.expiresAt !== undefined || event.supersedesEventHash !== undefined) {
+        throw new Error("Expiry and revision linkage are only valid on submission events");
       }
     }
 
     const eventHash = sha256Base64Url(canonicalBytes(event));
-    const record = { ...structuredClone(event), eventHash };
+    const record = {
+      ...structuredClone(event),
+      eventHash,
+      ...(witnessedInclusion ? { witnessedInclusion: structuredClone(witnessedInclusion) } : {}),
+    };
     this.records.push(record);
-    this.eventIds.add(event.eventId);
+    this.eventsById.set(event.eventId, record);
 
     if (event.kind === "SUBMITTED") {
-      this.transactions.set(event.transactionId, {
+      const lifecycleRecord: TransactionLifecycle = {
         commitment: event.commitment,
+        documentId: event.documentId,
+        documentRevision: event.documentRevision,
+        documentDigest: event.documentDigest,
+        submissionEventHash: eventHash,
+        submittedAt: event.occurredAt,
+        expiresAt: event.expiresAt!,
         sellerParticipantId: event.sellerParticipantId,
         buyerParticipantId: event.buyerParticipantId,
         submitterParticipantId: event.actorParticipantId,
         status: "PROVISIONAL",
+      };
+      this.transactions.set(event.transactionId, lifecycleRecord);
+      this.revisions.set(`${event.sellerParticipantId}:${event.documentId}:${event.documentRevision}`, {
+        digest: event.documentDigest,
+        eventHash,
       });
     } else if (lifecycle) {
-      lifecycle.status = event.kind === "ACCEPTED" ? "CONFIRMED" : "DISPUTED";
+      const statuses: Record<Exclude<TripleEntryEventKind, "SUBMITTED">, TEATransactionStatus> = {
+        ACCEPTED: "CONFIRMED",
+        DISPUTED: "DISPUTED",
+        EXPIRED: "EXPIRED",
+        WITHDRAWN: "WITHDRAWN",
+      };
+      lifecycle.status = statuses[event.kind as Exclude<TripleEntryEventKind, "SUBMITTED">];
     }
 
     return structuredClone(record);
@@ -323,11 +543,16 @@ export class InMemoryTripleEntryLedger {
   }
 
   async verify(): Promise<boolean> {
-    const verifier = new InMemoryTripleEntryLedger(this.trustedSigningKeys);
+    const verifier = new InMemoryTripleEntryLedger(
+      this.trustedSigningKeys,
+      this.trustedWitnessSigningKeys,
+      this.minimumWitnessSignatures,
+      this.expectedWitnessLogId,
+    );
     try {
       for (const record of this.records) {
-        const { eventHash, ...event } = record;
-        const verifiedRecord = await verifier.append(event);
+        const { eventHash, witnessedInclusion, ...event } = record;
+        const verifiedRecord = await verifier.append(event, witnessedInclusion);
         if (verifiedRecord.eventHash !== eventHash) return false;
       }
     } catch {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HostedTradeNetwork } from "../network.js";
+import { createParticipantKeys, type ParticipantKeyMaterial } from "../core/crypto.js";
 import { DemoSession, type DemoSnapshot } from "./orchestrator.js";
 import { SellerErpMock } from "./seller-erp.js";
 
@@ -41,9 +42,11 @@ export class DemoServer {
   private network: HostedTradeNetwork;
   private erp: SellerErpMock;
   private session: DemoSession;
+  private witnessKeys: ParticipantKeyMaterial[] = [];
   private readonly sseClients = new Set<ServerResponse>();
   private readonly stepDelayMs: number;
   private readonly networkPort: number;
+  private networkConfigured = false;
 
   constructor(options: DemoServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1";
@@ -78,17 +81,35 @@ export class DemoServer {
   /** Rebuilds the network, ERP mock and session so the demo starts clean. */
   async reset(): Promise<void> {
     await this.network.stop();
-    this.network = new HostedTradeNetwork({ host: "127.0.0.1", port: this.networkPort });
-    await this.network.start();
     this.erp = new SellerErpMock();
-    this.session = this.createSession();
+    await this.configureNetwork();
     this.broadcast(this.session.state);
+  }
+
+  private async configureNetwork(): Promise<void> {
+    this.witnessKeys = await Promise.all(
+      ["witness-1", "witness-2", "witness-3"].map((id) => createParticipantKeys(id)),
+    );
+    this.network = new HostedTradeNetwork({
+      host: "127.0.0.1",
+      port: this.networkPort,
+      witnessSigningKeys: new Map(this.witnessKeys.map((witness) => [
+        witness.participantId,
+        witness.signingPublicKey,
+      ])),
+      minimumWitnessSignatures: 2,
+      witnessLogId: "demo-trade-log",
+    });
+    await this.network.start();
+    this.networkConfigured = true;
+    this.session = this.createSession();
   }
 
   private createSession(): DemoSession {
     const session = new DemoSession({
       network: this.network,
       erpBaseUrl: () => this.erpBaseUrl,
+      witnessKeys: this.witnessKeys,
       stepDelayMs: this.stepDelayMs,
     });
     session.subscribe((snapshot) => this.broadcast(snapshot));
@@ -101,7 +122,11 @@ export class DemoServer {
   }
 
   async start(): Promise<this> {
-    await this.network.start();
+    if (!this.networkConfigured) {
+      await this.configureNetwork();
+    } else {
+      await this.network.start();
+    }
     if (this.server) return this;
     this.server = createServer((request, response) => {
       void this.handleRequest(request, response);

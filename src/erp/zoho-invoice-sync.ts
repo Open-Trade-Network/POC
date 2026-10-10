@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import { deriveSemanticAccountingTransaction } from "../core/accounting.js";
-import { createEnvelope, type ParticipantKeyMaterial } from "../core/crypto.js";
+import { createHash } from "node:crypto";
+import { bindTradeDocument, deriveSemanticAccountingTransaction } from "../core/accounting.js";
+import { createPrivateTradePackageEnvelope, type ParticipantKeyMaterial } from "../core/crypto.js";
 import { createSaltedCommitment, signTripleEntryEvent } from "../core/ledger.js";
 import { TradeDocumentSchema, type TradeDocument } from "../core/schema.js";
 import type { HostedTradeNetwork } from "../network.js";
@@ -126,25 +126,25 @@ export class ZohoBooksTradeAdapter {
       throw new Error("Seller key material does not match the registered seller identity");
     }
 
-    const envelope = await createEnvelope(
-      document,
+    const transactionId = `zoho:${document.documentId}:${document.revision}`;
+    const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
+    const commitment = createSaltedCommitment(accountingTransaction);
+    const envelope = await createPrivateTradePackageEnvelope(
+      { document, commitmentSalt: commitment.salt },
       this.sellerKeyMaterial,
       options.buyerParticipantId,
       buyer.encryptionPublicKey,
     );
     await this.network.submitEnvelope(envelope);
 
-    const transactionId = `zoho:${document.documentId}:${document.revision}`;
-    const accountingTransaction = deriveSemanticAccountingTransaction(document, transactionId);
-    const commitment = createSaltedCommitment(accountingTransaction);
     const previousEvent = this.network.getTripleEntryEvents().at(-1);
     const event = await signTripleEntryEvent({
-      version: 1,
+      version: 2,
       sequence: this.network.getTripleEntryEvents().length,
-      eventId: randomUUID(),
       transactionId,
+      ...bindTradeDocument(document),
       commitment: commitment.digest,
-      commitmentSalt: commitment.salt,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       previousHash: previousEvent?.eventHash ?? "",
       sellerParticipantId: options.sellerParticipantId,
       buyerParticipantId: options.buyerParticipantId,
@@ -161,6 +161,6 @@ export class ZohoBooksTradeAdapter {
       status: "PROVISIONAL",
       participantIds: [options.sellerParticipantId, options.buyerParticipantId],
     });
-    return { invoiceId, document, envelope, accountingTransaction, teaEventRecord, status: "PROVISIONAL" };
+    return { invoiceId, document, envelope, accountingTransaction, commitment, teaEventRecord, status: "PROVISIONAL" };
   }
 }

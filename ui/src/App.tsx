@@ -287,7 +287,7 @@ function ProofPanel({ snapshot }: { snapshot: DemoSnapshot }) {
       <div className="proof-group">
         <div className="proof-group-title">Salted commitment → shared ledger</div>
         <ProofRow label="Commitment digest" value={snapshot.commitment?.digest} ok={bv?.commitmentVerified} />
-        <ProofRow label="Commitment salt" value={snapshot.commitment?.salt} />
+        <ProofRow label="Salt delivery" value="recipient-encrypted package only" />
         <ProofRow label="SUBMITTED event hash" value={submitted?.eventHash} />
         <ProofRow label="ACCEPTED event hash" value={accepted?.eventHash} />
         <ProofRow

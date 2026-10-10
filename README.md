@@ -3,7 +3,7 @@ Proof of Concept for a decentralized interoperable trade data exchange network f
 
 ## Status
 
-**Current status:** working prototype v0.2. The repo now includes a validated protocol layer, a hosted sandbox network, a Zoho-first ERP adapter, and a sovereign-company AI gateway pattern for cross-company communication.
+**Current status:** working prototype v0.2. The repository includes a validated protocol layer, a hosted in-memory sandbox, a Zoho-first ERP adapter, a sovereign-company AI gateway pattern, and typed ONDC/BTN/Sahamati adapter scaffolds.
 
 This project is no longer only a blueprint. It now demonstrates the core building blocks needed for a real sandbox integration path:
 
@@ -13,6 +13,7 @@ This project is no longer only a blueprint. It now demonstrates the core buildin
 - HTTP-hosted sandbox network for online integration
 - ERP adapter for Zoho Books invoice sync
 - company-owned AI gateway with signed intent validation and policy enforcement
+- preliminary FIP-oriented Account Aggregator (AA) data mapping and encryption utilities
 
 ## Architecture
 
@@ -67,9 +68,13 @@ This is the foundation for privacy-preserving counterpart communication.
 
 The legacy ledger proposal path requires both trusted counterparties to sign. A separate native TEA lifecycle now supports a seller-signed submission followed by a counterparty acceptance or dispute. The submitted event is provisional; only the counterparty can transition it to confirmed. Events are hash chained and append-only. This remains an in-memory prototype, not a distributed consensus service.
 
-Semantic invoice and credit-note transactions derive balanced posting sets for each participant, including tax component postings. The full transaction is represented by a salted commitment in the shared event; the recipient can decrypt the source invoice, independently derive the same transaction, and verify that commitment before signing acceptance. The network verifies signatures and lifecycle transitions, not the economic truth of the source data or accounting interpretation.
+Semantic invoice and credit-note transactions derive balanced posting sets for each participant, including tax component postings. The full transaction is represented by a salted commitment in the shared event; the recipient-encrypted trade package carries the source document and salt, allowing the recipient to independently derive the same transaction and verify the commitment before signing acceptance. The salt is not included in the shared event. The network verifies signatures and lifecycle transitions, not the economic truth of the source data or accounting interpretation.
 
 Amounts in this pilot are denominated in INR paise; the protocol does not issue a currency or settle payments. Zoho major-unit decimals are converted exactly to paise, and invoices with unsupported currencies or tax totals that cannot be reconciled to named GST components are rejected.
+
+The current TEA protocol prototype adds deterministic event IDs, one submission per seller/document/revision, predecessor-linked revisions, typed disputes, and explicit `EXPIRED` and submitter-only `WITHDRAWN` outcomes. Acceptance requires a signed inclusion proof for both the submission and the acceptance event, with checkpoint timestamps preceding submission expiry; the accepting party's signature binds a supported derivation-rule version and the re-derived commitment. `src/core/transparency.ts` provides Merkle inclusion proofs and signed checkpoints, and the sandbox verifies a configured witness quorum. Commitment salts are delivered only inside the recipient-encrypted document package, not in shared event records. Expiry is event-driven: a counterparty must append a witnessed `EXPIRED` event; this sandbox has no expiry worker, so silence alone does not append a terminal event and the reported status remains provisional until one is recorded. This is proof-mechanics testing only: the demo creates its witness keys in-process, the ledger remains in-memory and globally hash-chained, and there is no independent witness service, checkpoint consistency proof, gossip, durable log, or production freshness/availability policy. A witnessed inclusion proof alone does not prevent split views or establish global finality.
+
+The event log is a commercial/accounting workflow record, not a substitute for IRP registration, IRN/acknowledgement, e-way bills, GSTR-2B, or other statutory records. The proposed IRP-first sequence, reconciliation rules, legal effect of provisional/accepted states, encrypted payload/salt retention, and key-loss handling remain subject to tax/legal counsel and pilot-operator decisions.
 
 ### 4. Hosted sandbox network
 
@@ -114,7 +119,17 @@ This is the recommended pattern for cross-company AI communication when each com
 
 The BharatTradeNet utilities canonicalize MLETR-shaped JSON with RFC 8785 and calculate SHA-256 digests. Class-3 DSC signing is represented by an injected signer interface: a real certificate-backed signer must be provided by an approved HSM/DSC integration. The Sahamati scaffold decodes a flexible consent payload, delegates signature verification and disclosure-scope authorization to injected interfaces, maps OTN invoice metadata into a small typed ReBIT-oriented model, and encrypts a package using ephemeral X25519 ECDH with AES-256-GCM.
 
-These adapter contracts are functional scaffolding, not production-certified network implementations. Beckn error codes, ReBIT schemas and encryption envelopes, Sahamati registry verification, ONDC request authentication, BTN/MLETR profile conformance, DSC trust-chain validation, retries, durable queueing, and operational controls must be aligned with the selected current network profiles before external deployment. The HTTP server's existing bearer-token protection is not a substitute for ONDC's required request authentication.
+#### Account Aggregator / Sahamati FIP status
+
+The codebase has a **preliminary FIP-oriented AA scaffold**, not an implemented/live AA integration. It can decode a typed consent artifact, call injected consent-signature and data-authorization interfaces, map an OTN invoice into a small local ReBIT-oriented invoice shape, and produce an encrypted package using ephemeral X25519 ECDH, HKDF-SHA-256, and AES-256-GCM. These functions are in `src/adapters/sahamati/`; they are library functions and are not exposed as AA HTTP endpoints.
+
+There is no connection to the Sahamati registry or its public-key endpoints, no concrete consent signature verifier, no official current ReBIT schema/profile validation, no AA/FIP network transport or callback lifecycle, and no production consent-expiry/revocation or audit implementation. The verifier and authorizer must be supplied by an integration; the current simplified local types and envelope must not be represented as Sahamati-certified or used to disclose real financial information without validating the applicable specifications and implementing the trust, consent, and operational controls.
+
+These adapter contracts are functional scaffolding, not production-certified network implementations. Beckn profile-specific validation and request authentication, ReBIT schemas and encryption envelopes, Sahamati registry verification and AA transport, BTN/MLETR profile conformance, DSC trust-chain validation, retries, durable queueing, and operational controls must be aligned with selected current network profiles before external deployment. The HTTP server's existing bearer-token protection is not a substitute for ONDC's required request authentication.
+
+## Developer documentation
+
+See the [OTN Developer and Protocol Contribution Guide](docs/DEVELOPER_GUIDE.md) for the repository map, API and adapter boundaries, AA/ONDC/BTN scaffold status, local setup, protocol lifecycle, security limits, and the process for proposing protocol changes. A formatted [ODT version](docs/OTN-Developer-Guide.odt) is provided for publishing or displaying to developers.
 
 ## Recommended communication pattern for AI + ERP + network
 
@@ -183,8 +198,8 @@ The current project has already completed the following milestones:
 
 1. **Protocol and threat model:** canonical schema, signatures, privacy boundaries, and validation logic.
 2. **Private exchange:** encrypted document flow and recipient verification.
-3. **Native TEA lifecycle prototype:** balanced semantic postings, provisional submission, and signed counterparty decision in a single-process hash-chained log.
-4. **Sandbox hosting:** live network layer for external integration.
+3. **Native TEA lifecycle prototype:** balanced semantic postings, provisional submission, signed counterparty decision, witnessed-inclusion proof mechanics, and terminal lifecycle outcomes in a single-process in-memory log.
+4. **Sandbox hosting:** HTTP network layer for local and controlled integration testing (in-memory, not production).
 5. **ERP integration:** Zoho-first invoice import and ledger update path.
 6. **Sovereign AI integration:** company-owned gateway and signed intent policy model.
 
@@ -193,11 +208,15 @@ The current project has already completed the following milestones:
 These remain important for the next production-ready phase:
 
 - validator participation model and finality assumptions
+- independent witness operations, checkpoint consistency/gossip, and split-view detection
+- independent witness operations, checkpoint consistency/gossip, and split-view detection
 - scope of field visibility across counterparties and verifiers
 - delegated authority rules for AI and ERP systems
-- retention and deletion obligations for signed ledger history
+- statutory reconciliation and legal treatment of provisional/accepted events
+- retention, backup, legal-hold, and deletion obligations for encrypted payloads and commitment salts
 - operational security for cross-company webhook and queue integrations
 - production OAuth and identity setup for ERP providers such as Zoho
+- official profile selection, trust integration, and transport implementation for ONDC, BTN, and Sahamati AA
 
 ## Full blueprint
 

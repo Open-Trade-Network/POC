@@ -97,11 +97,10 @@ export interface TripleEntryEventRecord {
   eventId: string;
   transactionId: string;
   commitment: string;
-  commitmentSalt?: string;
   previousHash: string;
   sellerParticipantId: string;
   buyerParticipantId: string;
-  kind: "SUBMITTED" | "ACCEPTED" | "DISPUTED";
+  kind: "SUBMITTED" | "ACCEPTED" | "DISPUTED" | "EXPIRED" | "WITHDRAWN";
   actorParticipantId: string;
   occurredAt: string;
   signature: string;
@@ -141,7 +140,7 @@ export interface DemoSnapshot {
   invoice?: DemoInvoiceView;
   document?: DemoDocumentView;
   envelope?: SignedEnvelope;
-  commitment?: { digest: string; salt: string };
+  commitment?: { digest: string };
   accountingTransaction?: SemanticAccountingTransaction;
   intents: { validationRequest?: SignedAgentIntent; acceptance?: SignedAgentIntent };
   events: TripleEntryEventRecord[];

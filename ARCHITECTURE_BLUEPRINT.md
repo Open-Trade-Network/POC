@@ -33,7 +33,7 @@ Four node classes are proposed: **mother**, **institution**, **professional**, a
 
 ## 3. Architecture principles
 
-1. **One logical network, distinct data and consensus responsibilities.** Exchange and ledger events share identities, identifiers, and protocol rules. Bulk encrypted payload storage need not be replicated by every validator.
+1. **One logical network, distinct data and ordering responsibilities.** Exchange events share identities, identifiers, and protocol rules. Bulk encrypted payload storage need not be replicated by every log operator or validator; global total ordering is a requirement to prove, not assume.
 2. **Privacy by default.** Nodes receive the minimum data needed for routing, validation, and availability. Plaintext access is explicit and audience-bound.
 3. **Participant-controlled authority.** Businesses control signing keys and grant access. Operating infrastructure does not itself confer authority over trade data.
 4. **Append-only accounting.** Corrections append reversing, superseding, or dispute events; they do not rewrite accepted history.
@@ -120,6 +120,21 @@ Mother-node functions should be replicated across independent operators and gove
 
 ## 6. Triple-entry accounting and event lifecycle
 
+### 6.0 Proposed first-pilot assurance and ordering policies
+
+These are architecture decisions for the proposed pilot, not implemented guarantees:
+
+- Network validators have a deliberately narrow assurance scope. They verify protocol rules such as signature validity, sender authorization, event uniqueness, predecessor linkage, witnessed-log inclusion, expiry, and legal lifecycle transitions. They do **not** independently establish the truth of an invoice, tax treatment, or accounting result.
+- Counterparty acceptance means that the accepting party decrypted the referenced document, applied the identified version of the derivation rules, and re-derived the transaction commitment. It is not a network certification of accounting correctness. The acceptance event should bind the submitted event hash, commitment, and derivation-rules version. Disputes should carry a typed reason, including arithmetic or tax mismatch.
+- The first-pilot hypothesis is to evaluate witnessed append-only logs for trade-event history rather than require global total ordering for every trade. Identity, membership, and key revocation may need stronger ordered semantics and must be evaluated separately. A time-boxed decision spike should compare witnessed logs, a BFT design, and a hybrid against explicit ordering needs, witness assumptions, outage behavior, finality, privacy leakage, and operational cost.
+- A recipient must verify actual inclusion of a submission in a checkpoint signed by the required independent witnesses before accepting it. A promise to include the event later is not sufficient for acceptance. Checkpoint freshness, witness quorum, merge delay, and behavior during witness outage remain to be specified by the spike.
+- One sender/document/revision binds to one canonical content digest. Lifecycle events such as `SUBMITTED`, `ACCEPTED`, and `DISPUTED` are separate, uniquely identified statements bound to that exact submission. Retries of an identical event are idempotent; conflicting signed content for the same revision is equivocation evidence. A correction is a new revision that explicitly references its predecessor.
+- A submission that receives no response expires into an explicit `EXPIRED` outcome based on witnessed checkpoint time. It remains unconfirmed; late acceptance requires a new submission. Silence is not acceptance. The accounting treatment of every lifecycle state must be specified per document kind.
+- For e-invoice-covered transactions, the pilot flow is IRP registration first, followed by an OTN event that references the IRN and acknowledgement. OTN is a commercial workflow/accounting evidence layer, not a replacement for statutory systems. This sequencing and the legal/tax effect of OTN states require tax-counsel review.
+- Each counterparty retains its encrypted payload and the commitment salt in its own encrypted archive, subject to a jointly defined retention, backup, and legal-hold policy. The first pilot does not use institution-node escrow. Destruction of the decryption key or payload can make the commitment impossible to open and may limit later dispute resolution; this consequence must be explicit.
+
+**Current POC implementation note:** protocol v2 enforces deterministic event IDs, revision uniqueness and predecessor linkage, typed disputes, submitter-only withdrawal, and witnessed expiry. Its testable Merkle prototype verifies signed inclusion checkpoints for both a submission and its acceptance, requiring the configured witness quorum and checkpoint timestamps before expiry. Commitment salts travel only inside the recipient-encrypted document package and are omitted from shared event records. Expiry is not automatic: a counterparty must append the witnessed `EXPIRED` event; until then this sandbox leaves a silent transaction `PROVISIONAL`. The demo's witnesses are generated in the same process, and the ledger itself remains an in-memory global hash chain. There is no independently operated witnessed log, checkpoint consistency proof, gossip/split-view detection, durable storage, expiry worker, or production freshness and outage policy. These mechanisms demonstrate a bounded protocol slice only; they do not satisfy the production exit criteria below or establish network finality.
+
 ### 6.1 Accounting event
 
 Each event is bound to a canonical document revision and carries or commits to the fields needed to derive accounting entries. A conceptual event includes:
@@ -127,27 +142,34 @@ Each event is bound to a canonical document revision and carries or commits to t
 - stable event/document identifiers, document kind, revision commitment;
 - seller and buyer identities, possibly represented by authorized identifiers or commitments in privacy-sensitive views;
 - debit/credit legs and tax components protected according to the chosen visibility model;
-- event time, protocol version, predecessor reference;
+- event time, protocol version, predecessor reference, canonical content digest, and unique event identifier;
 - submitter signature followed by the counterparty signature required for confirmation;
-- optional consent, disclosure, dispute, reversal, or proof references.
+- optional witnessed-log receipt/checkpoint proof, consent, disclosure, typed dispute, expiry, withdrawal, reversal, or proof references.
 
 Both parties derive their books from the same accepted event. Non-financial events (order, dispatch, goods receipt) may produce commitment/accounting entries without profit-and-loss effects.
 
 ### 6.2 Lifecycle
 
-1. Sender creates and validates a canonical document locally against its profile.
-2. Sender commits to the revision, signs the document/envelope, encrypts the payload to the recipient, and appends a provisional submission event.
-3. Relays route and optionally replicate ciphertext; they cannot decrypt it by default.
-4. Validators check protocol rules, sender authorization, signatures or proofs, uniqueness/idempotency, and allowed state transitions within their permitted view.
-5. Recipient decrypts and validates, verifies the transaction commitment, then accepts or disputes. Acceptance produces a signed counterparty event; the sender cannot confirm its own submission.
-6. The event reaches defined ledger finality. Both parties verify the event and derive their books.
-7. Corrections append new events. Disputes affect derived status without editing the original event.
+1. Sender creates and validates a canonical document locally against its profile. For e-invoice-covered transactions in the proposed pilot, the participant completes IRP registration first and records the IRN and acknowledgement reference.
+2. Sender commits to the revision, signs the document/envelope, encrypts the payload and salt to the recipient, and appends a provisional submission event with an expiry and predecessor reference.
+3. Relays route and optionally replicate ciphertext; they cannot decrypt it by default. A witnessed log returns an inclusion receipt and later publishes a checkpoint proof under its defined merge-delay policy.
+4. Validators check only the published protocol rule registry: signatures, sender authorization, unique event/revision binding, predecessor linkage, witnessed inclusion, expiry, idempotency, and allowed state transitions. Unless an explicit proof is added, they do not verify accounting or tax arithmetic.
+5. Before accepting, the recipient verifies actual inclusion in a sufficiently fresh checkpoint signed by the required independent witnesses, decrypts and validates the exact bound document revision, and independently derives the transaction commitment using a versioned rule set. Acceptance records the event hash, commitment, and derivation version; mismatch may be recorded as a typed dispute.
+6. A submission may become `ACCEPTED`, `DISPUTED`, `EXPIRED`, or (if the protocol permits) `WITHDRAWN`. Expiry is based on witnessed checkpoint time, leaves the submission unconfirmed, and rejects late acceptance; a sender must issue a new submission. Silence never creates confirmed accounting.
+7. Each participant reconciles its OTN events with its ERP and applicable statutory records. OTN status does not establish statutory filing or tax-credit eligibility.
+8. Corrections append new events and revisions that reference their predecessor. Disputes affect derived status without editing the original event. Identical retries are idempotent; conflicting signed statements for one sender/document/revision are retained as equivocation evidence.
 
 ### 6.3 Immutability and finality
 
-The target is append-only, tamper-evident history with explicit consensus finality. It is not sound to promise data is impossible to alter under every failure, governance action, or key compromise. The protocol must define validator thresholds, equivocation handling, checkpoints, recovery, and finality.
+The target is append-only, tamper-evident history with an explicit and testable finality definition. Global consensus is not yet selected for ordinary trade events. The first-pilot direction is to evaluate per-participant or per-transaction hash-chained trade logs with Merkle inclusion/consistency proofs, signed checkpoints, and independent witnesses; identity, membership, and key-revocation ordering may require a separate stronger service. A witnessed transparency log detects and proves certain forms of rewriting or split views, but does not by itself provide a globally ordered transaction state machine, immediate inclusion, or availability during witness outages. The decision spike must define witness quorum, checkpoint freshness, maximum merge delay, split-view detection, recovery, and tolerated faults, then compare those properties with BFT and hybrid alternatives. Do not claim stronger finality than the selected model provides.
 
-Encrypted payload retention is distinct from ledger immutability. A commitment may remain verifiable even if payload replicas become unavailable or keys are destroyed. This trade-off between permanent evidence, business retention, and privacy/erasure obligations needs legal review before policy is fixed.
+Encrypted payload retention is distinct from log immutability. Each party is expected, under the proposed pilot policy, to retain its encrypted envelope and the salt needed to open the commitment. A commitment may remain on the log even if payload copies become unavailable or keys are destroyed; in that case it may no longer be possible to resolve a substantive dispute from the record. Retention periods, backup/recovery, legal holds, and key destruction need legal review before policy is fixed.
+
+### 6.4 Statutory-record boundary and reconciliation
+
+OTN records support commercial workflow and participant accounting; they do not replace statutory records, government systems, or legal/tax determinations. For transactions subject to e-invoicing, the proposed pilot sequence is to obtain the IRP-issued Invoice Reference Number (IRN) and acknowledgement before submitting the corresponding OTN event. OTN should bind that event to the statutory reference and a defined digest/mapping of the relevant invoice representation. If business workflow requires OTN intake before IRP registration, that must remain explicitly provisional and must not be represented as completed statutory registration.
+
+Reconciliation should distinguish the different purposes of records: the IRN/IRP acknowledgement identifies the registered e-invoice; an e-way bill is a separate goods-movement record where applicable; and GSTR-2B is an auto-drafted input-tax-credit statement, not a replacement invoice or a general source of truth for every tax question. Each participant's ERP/gateway should reconcile applicable OTN events against its IRP, e-way bill, ERP, and GSTR-2B records as appropriate, classifying missing references, amount/tax-component differences, and timing differences. Tax counsel must confirm applicable sequencing, statutory retention, credit-note/amendment handling, and whether any provisional or accepted OTN state has legal, accounting, or input-tax-credit consequences before the pilot.
 
 ## 7. Privacy and cryptographic design
 
@@ -231,7 +253,7 @@ For production, keep ERP adapters and AI gateways in the participant's controlle
 canonical/       implemented: canonical JSON, trade-document schema, validation; semantic TEA posting model in progress
 crypto/          implemented POC: signing, verification, envelope encryption; production key custody pending
 identity/        pending: business credentials, public-key discovery, delegation, revocation
-ledger/          implemented POC: bilateral proposals plus signed provisional/accept/dispute TEA events in an in-memory append-only log
+ledger/          implemented POC: bilateral proposals plus signed provisional/accept/dispute/expiry/withdrawal TEA events, witnessed inclusion mechanics, and an in-memory append-only log
 network/         implemented POC: single-process HTTP sandbox with TEA event/status and optional ONDC confirm/update routes; peer discovery, relay, persistence, and consensus pending
 storage/         pending: durable encrypted payloads, replication, retention, backup/recovery
 consent/         pending: scoped grants, disclosure packaging, verifier/audit interface
@@ -245,17 +267,17 @@ Canonicalization and validation should be deterministic and independently tested
 
 ## 13. Build sequence and exit criteria
 
-### Phase 0: protocol and threat model (partially implemented)
+### Phase 0: protocol, assurance, and threat model (partially implemented)
 
-Deliver actor/data-flow diagrams, privacy/metadata matrix, node capability model, trust assumptions, identity/key lifecycle, event specification, consensus/finality choice, and legal retention review. Exit when the team can state who sees each field, who validates each rule, when events are final, and how key loss, validator outage, disputes, and corrections work.
+Deliver actor/data-flow diagrams, privacy/metadata matrix, node capability model, trust assumptions, identity/key lifecycle, versioned validator rule registry, event/lifecycle specification, retention policy, statutory-record position, and consensus-versus-witnessed-log decision record. Run a time-boxed decision spike comparing witnessed logs for trade events, global BFT ordering, and a hybrid with a separately ordered identity/revocation registry. Define precisely which operations require global ordering and test split-view, rewrite, witness-outage, stale-checkpoint, and recovery behavior. Exit when the team can state who sees each field, which rules are validated by whom, what counterparty acceptance attests to, how receipt/checkpoint freshness works, how an event expires, and how payload/salt recovery and key loss affect disputes; obtain tax/legal review of statutory boundaries.
 
 ### Phase 1: two-party private exchange (core primitives implemented; relay flow pending)
 
 Deliver canonical document, local keys, signed/encrypted message, untrusted relay, recipient verification, idempotent retries, encrypted local storage. Exit when a relay cannot read or silently alter a message and both parties independently verify the same revision.
 
-### Phase 2: distributed triple-entry ledger (semantic event lifecycle prototype implemented; persistence and distributed operation pending)
+### Phase 2: verifiable triple-entry event history (semantic lifecycle and inclusion-proof prototype implemented; independent witnessed history and persistence pending)
 
-Deliver event schema/accounting rules, multi-operator validator prototype, countersignature flow, append-only corrections/disputes, replicated verification, finality and recovery tests. Exit when independent nodes converge and reject tampered, replayed, unauthorized, or conflicting events under documented fault assumptions.
+Deliver a durable event log, idempotency and outbox, versioned derivation rules and independent test vectors, unique sender/document/revision binding, predecessor-linked corrections, typed disputes, and terminal expiry/withdrawal behavior. Prototype witnessed Merkle checkpoints and require actual witnessed inclusion before counterparty acceptance. Build an alternative BFT/hybrid prototype only to the extent needed for the decision spike. Exit when independent participants detect injected forks/split views, reject replay and late acceptance, verify inclusion/consistency proofs, and agree on the documented finality and outage behavior.
 
 ### Phase 3: node classes and governance (pending)
 
@@ -286,6 +308,12 @@ For both integrations, establish data minimization and retention rules, correlat
 | Risk | Mitigation direction |
 |---|---|
 | Visible accounting data reveals commercial relationships/amounts | Field visibility policy, private channels, commitments/proofs, metadata minimization |
+| Network acceptance is misread as independent accounting or tax certification | Publish a versioned validator rule registry; bind acceptance to the counterparty's derivation version and commitment; defer proofs unless a defined use case needs them |
+| A log or participant equivocates about a document revision | Enforce unique sender/document/revision-to-digest binding, predecessor references, witnessed inclusion before acceptance, checkpoint gossip, and offline-verifiable equivocation evidence |
+| Global consensus adds cost without a required global ordering use case | Run a time-boxed witnessed-log/BFT/hybrid decision spike; separately identify identity, membership, and revocation operations that need ordered semantics |
+| Silence leaves submissions indefinitely provisional or is misread as acceptance | Signed expiry, witnessed time, explicit terminal outcome, and per-state accounting treatment; no deemed acceptance by default |
+| OTN status is mistaken for statutory e-invoice or ITC status | Register covered invoices with the IRP first; link IRN/acknowledgement; reconcile applicable statutory/ERP records; obtain tax-counsel review |
+| Salt or encrypted payload is lost before a dispute | Party-controlled encrypted archives of payload and salt, retention/backup/legal-hold rules, recovery drills, and explicit consequences of key destruction |
 | Lost or compromised business keys | Local/hardware-backed custody where practical, delegation, rotation/revocation, tested recovery and explicit trust trade-offs |
 | Incorrect canonicalization or proof circuit | Versioned deterministic specs, test vectors, independent review, controlled upgrades |
 | Permanent evidence conflicts with retention/erasure duties | Separate encrypted payloads, define lawful retention and key-destruction consequences before launch |
@@ -301,19 +329,19 @@ For both integrations, establish data minimization and retention rules, correlat
 ## 15. Decisions required before architecture is fixed
 
 1. Is the initial ledger permissioned among admitted institutions, open to qualifying operators, or hybrid?
-2. Which actors validate events, and what collusion/outage threshold must finality tolerate?
-3. Which fields are visible to counterparties, validators, other participants, and third-party verifiers?
+2. Which ordering operations need global semantics, and what witness quorum, checkpoint freshness, merge delay, outage tolerance, and finality should the selected model provide?
+3. Which fields are visible to counterparties, log operators/validators, other participants, and third-party verifiers?
 4. Is GSTIN visible on-ledger, pseudonymous, or selectively disclosed?
 5. What key recovery model is acceptable, and which parties are trusted in recovery?
-6. Which event kinds may be provisionally submitted by one party, and which require counterparty acceptance before confirmation?
-7. What retention, deletion, backup, and legal-hold obligations apply to payloads and ledger evidence?
-8. What is the first third-party verification use case and exact claim to prove?
-9. What measurable requirement justifies ZK or an external chain over signatures and commitments?
-10. What availability, throughput, offline, and cost targets define pilot success?
+6. What retention, deletion, backup, and legal-hold obligations apply to payloads, salts, and ledger/log evidence?
+7. What is the first third-party verification use case and exact claim to prove?
+8. What measurable requirement justifies ZK or an external chain over signatures and commitments?
+9. What availability, throughput, offline, and cost targets define pilot success?
+10. Which tax counsel-approved rules govern IRP sequencing, credit-note/amendment reconciliation, and the legal/accounting treatment of provisional, accepted, and disputed OTN events?
 
 ## 16. Working recommendation
 
-Build the exchange and triple-entry ledger as one protocol with separate privacy boundaries: signed accounting events and commitments form shared history; encrypted documents are delivered/replicated for authorized participants; scoped grants let third parties verify selected claims. Begin with signatures, encryption, and commitments. Introduce ZK proofs or external-chain anchors only when a concrete workflow demonstrates value. Choose consensus and node governance before selecting a blockchain product.
+Build the exchange and triple-entry event history as one protocol with separate privacy boundaries: signed events and commitments form verifiable history; encrypted documents and their salts are retained by authorized counterparties; scoped grants let third parties verify selected claims. Begin with signatures, encryption, witnessed checkpoints, and explicit bilateral verification. Do not assume global BFT ordering for ordinary trades: first test witnessed logs, and use stronger ordering only for operations whose requirements justify it. Introduce ZK proofs or external-chain anchors only when a concrete workflow demonstrates value.
 
 The current POC demonstrates canonical document validation, signatures and encrypted envelopes, legacy bilateral ledger-proposal verification, balanced semantic posting sets for INR invoices/credit notes, and a signed provisional-to-confirmed/disputed TEA lifecycle in an in-memory HTTP sandbox. The Zoho flow submits a seller-signed provisional event, and the buyer can verify the salted commitment and countersign; the provider test uses a fake Zoho HTTP service. It does not yet demonstrate durable storage, independently operated nodes, a blind untrusted relay, distributed consensus/finality, scoped third-party verifier grants, production Zoho OAuth, or transport between company gateways.
 

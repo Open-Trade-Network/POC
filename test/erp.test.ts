@@ -1,8 +1,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { deriveSemanticAccountingTransaction } from "../src/core/accounting.js";
+import { bindTradeDocument, deriveSemanticAccountingTransaction } from "../src/core/accounting.js";
+import { canonicalBytes, sha256Base64Url } from "../src/core/canonical.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createParticipantKeys } from "../src/core/crypto.js";
-import { signTripleEntryEvent, verifySaltedCommitment } from "../src/core/ledger.js";
+import {
+  createParticipantKeys,
+  openPrivateTradePackageEnvelope,
+  type ParticipantKeyMaterial,
+} from "../src/core/crypto.js";
+import { createCounterpartyVerificationAttestation, signTripleEntryEvent, verifySaltedCommitment } from "../src/core/ledger.js";
+import { createWitnessedInclusionProof } from "../src/core/transparency.js";
 import { HostedTradeNetwork } from "../src/network.js";
 import { mapZohoInvoiceToTradeDocument, ZohoBooksTradeAdapter } from "../src/erp/zoho-invoice-sync.js";
 
@@ -15,6 +21,7 @@ describe("zoho books ERP integration", () => {
   let baseUrl: string;
   let state: FakeZohoState;
   let network: HostedTradeNetwork;
+  let witnessKeys: ParticipantKeyMaterial[];
 
   beforeEach(async () => {
     state = { lastStatus: null };
@@ -61,7 +68,15 @@ describe("zoho books ERP integration", () => {
     }
     baseUrl = `http://127.0.0.1:${address.port}`;
 
-    network = new HostedTradeNetwork({ host: "127.0.0.1", port: 0 });
+    witnessKeys = await Promise.all(["erp-witness-a", "erp-witness-b", "erp-witness-c"]
+      .map((participantId) => createParticipantKeys(participantId)));
+    network = new HostedTradeNetwork({
+      host: "127.0.0.1",
+      port: 0,
+      witnessSigningKeys: new Map(witnessKeys.map((witness) => [witness.participantId, witness.signingPublicKey])),
+      minimumWitnessSignatures: 2,
+      witnessLogId: "erp-test-log",
+    });
     await network.start();
   });
 
@@ -129,37 +144,63 @@ describe("zoho books ERP integration", () => {
     expect(result.document.totalMinor).toBe(11800);
     expect(result.status).toBe("PROVISIONAL");
     expect(result.teaEventRecord.kind).toBe("SUBMITTED");
+    expect(result.teaEventRecord).not.toHaveProperty("commitmentSalt");
     expect(network.getTripleEntryTransactionStatus(result.accountingTransaction.transactionId)).toBe("PROVISIONAL");
     expect(state.lastStatus).toMatchObject({
       status: "pending_counterparty",
       metadata: { status: "PROVISIONAL" },
     });
 
+    const buyerPackage = await openPrivateTradePackageEnvelope(
+      result.envelope,
+      buyer,
+      seller.signingPublicKey,
+    );
     const buyerTransaction = deriveSemanticAccountingTransaction(
-      result.document,
+      buyerPackage.document,
       result.accountingTransaction.transactionId,
     );
-    expect(result.teaEventRecord.commitmentSalt).toBeDefined();
     expect(verifySaltedCommitment(
       buyerTransaction,
       result.teaEventRecord.commitment,
-      result.teaEventRecord.commitmentSalt!,
+      buyerPackage.commitmentSalt,
     )).toBe(true);
 
+    const witnessedSubmission = await createWitnessedInclusionProof(
+      [result.teaEventRecord.eventHash],
+      result.teaEventRecord.eventHash,
+      "erp-test-log",
+      witnessKeys,
+    );
     const acceptedEvent = await signTripleEntryEvent({
-      version: 1,
+      version: 2,
       sequence: 1,
-      eventId: "buyer-accepts-zoho-invoice",
       transactionId: result.teaEventRecord.transactionId,
+      ...bindTradeDocument(result.document),
       commitment: result.teaEventRecord.commitment,
+      verification: createCounterpartyVerificationAttestation(
+        buyerTransaction,
+        result.teaEventRecord.commitment,
+        buyerPackage.commitmentSalt,
+        "otn-accounting-v1",
+      ),
+      witnessedSubmission,
       previousHash: result.teaEventRecord.eventHash,
       sellerParticipantId: seller.participantId,
       buyerParticipantId: buyer.participantId,
       kind: "ACCEPTED",
       actorParticipantId: buyer.participantId,
-      occurredAt: new Date().toISOString(),
+      occurredAt: new Date(Date.parse(witnessedSubmission.checkpoint.timestamp) + 1000).toISOString(),
     }, buyer);
-    await network.submitTripleEntryEvent(acceptedEvent);
+    const acceptedEventHash = sha256Base64Url(canonicalBytes(acceptedEvent));
+    const witnessedAcceptance = await createWitnessedInclusionProof(
+      [result.teaEventRecord.eventHash, acceptedEventHash],
+      acceptedEventHash,
+      "erp-test-log",
+      witnessKeys,
+      new Date(Date.parse(witnessedSubmission.checkpoint.timestamp) + 2000).toISOString(),
+    );
+    await network.submitTripleEntryEvent(acceptedEvent, witnessedAcceptance);
     expect(network.getTripleEntryTransactionStatus(result.accountingTransaction.transactionId)).toBe("CONFIRMED");
 
     expect(state.lastStatus).toMatchObject({

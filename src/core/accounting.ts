@@ -64,6 +64,18 @@ export const SemanticAccountingTransactionSchema = z.object({
 
 export type SemanticAccountingTransaction = z.infer<typeof SemanticAccountingTransactionSchema>;
 
+export function bindTradeDocument(document: TradeDocument): {
+  documentId: string;
+  documentRevision: number;
+  documentDigest: string;
+} {
+  return {
+    documentId: document.documentId,
+    documentRevision: document.revision,
+    documentDigest: sha256Base64Url(canonicalBytes(document)),
+  };
+}
+
 export interface PrivateAccountingEvent {
   eventId: string;
   documentId: string;
