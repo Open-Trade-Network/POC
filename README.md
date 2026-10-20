@@ -17,7 +17,7 @@ This project is no longer only a blueprint. It now demonstrates the core buildin
 
 ## Architecture
 
-The network is decentralized infrastructure for B2B trade-document exchange and triple-entry accounting. Counterparties sign a shared accounting event, verify the same event, and derive their respective books from it. The ledger remains append-only: corrections, reversals, and disputes are new events, never edits to accepted history.
+The network is a decentralized infrastructure for B2B trade-document exchange and triple-entry accounting. Counterparties sign a shared accounting event, verify the same event, and derive their respective books from it. The ledger remains append-only: corrections, reversals, and disputes are new events, never edits to accepted history.
 
 The exchange and ledger are one logical network with distinct privacy boundaries:
 
